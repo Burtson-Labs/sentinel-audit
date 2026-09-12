@@ -33,7 +33,7 @@ const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every
  * `any`" is not evidence, while "src/foo.ts:12" is.
  */
 const EVIDENCE_REF =
-  /[\w./\\-]+:\d+|[\w./\\-]+\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts|json|ya?ml|conf|html?|toml|env|sh|lock)\b|\b(?:npm audit|pnpm audit|yarn npm audit|advisory|lockfile|workflow|Dockerfile|Containerfile|package\.json|node_modules)\b/i;
+  /[\w./\\-]+:\d+|[\w./\\-]+\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts|json|ya?ml|conf|html?|toml|env|sh|lock)\b|\b(?:npm audit|pnpm audit|yarn npm audit|advisory|advisories|lockfile|workflow|Dockerfile|Containerfile|package\.json|node_modules|gitleaks|trufflehog|detect-secrets|semgrep|codeql|trivy|grype|osv-scanner)\b|(?:^|\s)\.git(?:\b|\/)/i;
 
 export function validateFinding(f: Partial<Finding>): ValidationIssue[] {
   const issues: ValidationIssue[] = [];

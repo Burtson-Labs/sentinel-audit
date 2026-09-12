@@ -257,12 +257,11 @@ function stripAnsi(s: string): string {
  */
 export function extractJson<T>(text: string): T | null {
   const fenced = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((m) => m[1] ?? '');
-  const candidates = [...fenced.reverse(), text];
-  for (const candidate of candidates) {
+  for (const candidate of fenced.reverse()) {
     const parsed = tryParseBalanced<T>(candidate);
     if (parsed !== null) return parsed;
   }
-  return null;
+  return scanForJson<T>(text);
 }
 
 function tryParseBalanced<T>(text: string): T | null {
@@ -270,21 +269,70 @@ function tryParseBalanced<T>(text: string): T | null {
   try {
     return JSON.parse(trimmed) as T;
   } catch {
-    // fall through to balanced extraction
+    return scanForJson<T>(trimmed);
   }
-  for (const [open, close] of [
-    ['[', ']'],
-    ['{', '}'],
-  ] as const) {
-    const start = trimmed.indexOf(open);
-    const end = trimmed.lastIndexOf(close);
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(trimmed.slice(start, end + 1)) as T;
-      } catch {
-        continue;
-      }
+}
+
+/**
+ * Find the last well-formed JSON array or object anywhere in the text.
+ *
+ * The naive version of this — slice from the first `[` to the last `]` — is
+ * wrong in a way that silently costs you the whole model pass. Agent output
+ * routinely contains prose that happens to use brackets ("SEC-001
+ * [High/confirmed]"), so the first bracket belongs to a sentence and the slice
+ * spans from mid-sentence to the end of the real payload. It never parses, the
+ * pass reports "no parseable JSON", and the scan quietly degrades to
+ * deterministic-only while looking like it ran.
+ *
+ * So: try every opening bracket as a candidate start, match brackets properly
+ * (skipping string literals and escapes), and keep the last one that parses.
+ */
+function scanForJson<T>(text: string): T | null {
+  let best: T | null = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch !== '[' && ch !== '{') continue;
+    const end = matchBracket(text, i);
+    if (end < 0) continue;
+    try {
+      best = JSON.parse(text.slice(i, end + 1)) as T;
+      // Skip past what we just consumed: a nested value cannot be a better
+      // candidate than the structure containing it.
+      i = end;
+    } catch {
+      continue;
     }
   }
-  return null;
+  return best;
+}
+
+/** Index of the bracket closing the one at `start`, or -1. String-aware. */
+function matchBracket(text: string, start: number): number {
+  const open = text[start];
+  const close = open === '[' ? ']' : '}';
+  let depth = 0;
+  let inString = false;
+  let quote = '';
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (inString) {
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      quote = ch;
+      continue;
+    }
+    if (ch === '[' || ch === '{') depth += 1;
+    else if (ch === ']' || ch === '}') {
+      depth -= 1;
+      if (depth === 0) return ch === close ? i : -1;
+    }
+  }
+  return -1;
 }
