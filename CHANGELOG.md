@@ -45,7 +45,16 @@ First release.
 - `REPORT.md`, `REPORT.html` (self-contained, dark/light, zero network requests), `findings/*.json` (superset of the common consultant finding schema), `report.sarif` (2.1.0), `CONFIDENCE.md`, `COVERAGE.md`, `proofs/*.mjs`.
 - `sentinel init-workflow` writes a GitHub Actions workflow that self-scans on pull requests and weekly and uploads SARIF to code scanning.
 
+### Model-pass robustness
+
+- Analysis prompts forbid tool use. The provider may be a coding agent rather than a completion endpoint; left to its own devices it explores the repository to answer a review question, burns the per-call budget, and is killed before it answers.
+- JSON extraction scans every opening bracket and keeps the last structure that parses, so prose containing brackets (`SEC-001 [High/confirmed]`) no longer swallows the payload.
+- A provider that did not answer is reported differently from a provider that answered badly — the two need different remedies.
+- `SENTINEL_LLM_DEBUG=<dir>` dumps every prompt/response pair.
+- `--llm-timeout` bounds the per-call budget, which dominates scan wall time.
+
 ### Engineering
 
 - Zero runtime dependencies. In-tree YAML subset reader, semver comparator, lexical masker, argument parser and schema validator.
-- 225 tests, including an end-to-end scan of a synthetic repository that asserts a known non-defect is *refuted* by a real executed proof.
+- 233 tests, including an end-to-end scan of a synthetic repository that asserts a known non-defect is *refuted* by a real executed proof, and that no artefact embeds the audited source.
+- Artefacts never republish the subject: the run record carries findings, provenance and summaries, not a copy of the codebase.

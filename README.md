@@ -49,6 +49,7 @@ Exit codes: `0` clean · `1` findings at or above the conditional threshold · `
 | `CONFIDENCE.md` | Scored assessment: overall, security posture, gate decision, risk matrix, remediation phases |
 | `COVERAGE.md` | What was **not** examined and why — derived from what actually ran |
 | `proofs/*.mjs` | The generated proof scripts. Re-runnable, unchanged, by hand |
+| `scan-context.json` | The run record: provenance, collector results, gaps. Summaries only — never a copy of your source |
 
 ---
 
@@ -260,7 +261,7 @@ Sentinel's own `COVERAGE.md` says this per run; here it is in general:
 ```bash
 pnpm install
 pnpm build          # tsc
-pnpm test           # 225 vitest tests incl. an end-to-end scan of a synthetic repo
+pnpm test           # 233 vitest tests incl. an end-to-end scan of a synthetic repo
 pnpm lint
 pnpm selfscan       # Sentinel audits Sentinel
 ```
