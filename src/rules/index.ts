@@ -3,12 +3,13 @@ import { readTextSafe, type RepoFile } from '../util/fsx.js';
 import { isTestPath } from '../collectors/recon.js';
 import type { CollectorRun, RuleHit } from '../types.js';
 import { SECURITY_RULES } from './security.js';
+import { CRYPTO_RULES } from './crypto.js';
 import { SERVER_RULES } from './server.js';
 import { QUALITY_RULES } from './quality.js';
 import { WEB_RULES } from './web.js';
 import type { Rule, RuleFileContext, RuleRepoContext } from './types.js';
 
-export const ALL_RULES: Rule[] = [...SECURITY_RULES, ...SERVER_RULES, ...QUALITY_RULES, ...WEB_RULES];
+export const ALL_RULES: Rule[] = [...SECURITY_RULES, ...CRYPTO_RULES, ...SERVER_RULES, ...QUALITY_RULES, ...WEB_RULES];
 
 export function ruleById(id: string): Rule | undefined {
   return ALL_RULES.find((r) => r.id === id);
@@ -141,5 +142,5 @@ export function isVendoredArtifact(path: string, text: string): boolean {
   return longest > 1500;
 }
 
-export { SECURITY_RULES, SERVER_RULES, QUALITY_RULES, WEB_RULES };
+export { SECURITY_RULES, CRYPTO_RULES, SERVER_RULES, QUALITY_RULES, WEB_RULES };
 export type { Rule, RuleFileContext, RuleRepoContext };

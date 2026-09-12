@@ -154,6 +154,13 @@ function reassert(ruleId: string, line: string, h: RuleHit): boolean {
     'SEC-CHILD-PROCESS-SHELL': /\b(exec|execSync|spawn|spawnSync|execFile|execFileSync|fork)\s*\(/,
     'SEC-EVAL': /\beval\s*\(|new\s+Function\s*\(|set(?:Timeout|Interval)\s*\(\s*['"`]/,
     'SEC-WEAK-CRYPTO': /createHash|Math\.random|createCipher/,
+    // Crypto-usage rules: re-assert the *construct*, never the consequence. Each
+    // pattern is deliberately narrower than the rule's own matcher, so a line
+    // that drifted into a comment or lost the operator fails the re-check.
+    'SEC-TIMING-UNSAFE-COMPARE': /===|!==|==|!=|Buffer\s*\.\s*compare|\.\s*equals\s*\(/,
+    'SEC-CRYPTO-IV-REUSE': /create(?:De)?cipheriv|\b(?:iv|counter|nonce)\s*:|ecb|ECB/,
+    'SEC-WEBCRYPTO-MISUSE': /SHA-?1|MD5|importKey|generateKey|unwrapKey|iterations|tagLength/i,
+    'SEC-SIGNATURE-VERIFY-DISCARDED': /verif|timingSafeEqual|constantTimeEqual|catch|skip|disable|bypass|ignore|none/i,
     'SEC-TLS-DISABLED': /rejectUnauthorized|NODE_TLS_REJECT_UNAUTHORIZED|strictSSL|InsecureSkipVerify/,
     'SEC-CORS-WILDCARD': /Access-Control-Allow-Origin|origin\s*:|cors\s*\(|credentials\s*:/,
     'SEC-POSTMESSAGE-ORIGIN': /addEventListener|postMessage/,

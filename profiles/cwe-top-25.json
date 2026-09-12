@@ -48,6 +48,25 @@
       { "id": "CWE-327", "title": "Use of a Broken or Risky Cryptographic Algorithm" },
       { "id": "CWE-338", "title": "Use of Cryptographically Weak PRNG" }
     ],
+    "SEC-TIMING-UNSAFE-COMPARE": [
+      { "id": "CWE-208", "title": "Observable Timing Discrepancy", "url": "https://cwe.mitre.org/data/definitions/208.html" },
+      { "id": "CWE-1254", "title": "Incorrect Comparison Logic Granularity" }
+    ],
+    "SEC-CRYPTO-IV-REUSE": [
+      { "id": "CWE-323", "title": "Reusing a Nonce, Key Pair in Encryption", "url": "https://cwe.mitre.org/data/definitions/323.html" },
+      { "id": "CWE-329", "title": "Generation of Predictable IV with CBC Mode" },
+      { "id": "CWE-327", "title": "Use of a Broken or Risky Cryptographic Algorithm" }
+    ],
+    "SEC-WEBCRYPTO-MISUSE": [
+      { "id": "CWE-328", "title": "Use of Weak Hash", "url": "https://cwe.mitre.org/data/definitions/328.html" },
+      { "id": "CWE-522", "title": "Insufficiently Protected Credentials" },
+      { "id": "CWE-916", "title": "Use of Password Hash With Insufficient Computational Effort" }
+    ],
+    "SEC-SIGNATURE-VERIFY-DISCARDED": [
+      { "id": "CWE-347", "title": "Improper Verification of Cryptographic Signature", "url": "https://cwe.mitre.org/data/definitions/347.html" },
+      { "id": "CWE-252", "title": "Unchecked Return Value" },
+      { "id": "CWE-390", "title": "Detection of Error Condition Without Action" }
+    ],
     "SEC-EVAL": [
       { "id": "CWE-95", "title": "Improper Neutralization of Directives in Dynamically Evaluated Code" },
       { "id": "CWE-94", "title": "Improper Control of Generation of Code", "url": "https://cwe.mitre.org/data/definitions/94.html" }

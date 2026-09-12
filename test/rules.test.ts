@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { maskSource } from '../src/util/lex.js';
 import { ALL_RULES, ruleById, isVendoredArtifact } from '../src/rules/index.js';
+import { classifyOperand, negativePredicateName, sameFieldComparison, wordTokens } from '../src/rules/crypto.js';
 import type { RuleFileContext, RuleRepoContext } from '../src/rules/types.js';
 import type { RepoFile } from '../src/util/fsx.js';
 
@@ -180,6 +181,324 @@ describe('SEC-WEAK-CRYPTO', () => {
   });
 });
 
+describe('SEC-TIMING-UNSAFE-COMPARE', () => {
+  const hmacFile = (body: string): string => `import { createHmac } from 'node:crypto';\n${body}`;
+
+  it('flags an HMAC compared with ===', () => {
+    const src = hmacFile("const expectedSignature = createHmac('sha256', k).update(b).digest('hex');\nif (expectedSignature === header) accept();\n");
+    const hits = scan('SEC-TIMING-UNSAFE-COMPARE', 'src/webhook.ts', src);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.keyed).toBe(true);
+    expect(hits[0]!.meta?.operand).toBe('expectedSignature');
+  });
+
+  it('flags an API key compared with ==', () => {
+    const hits = scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.ts', 'if (apiKey == supplied) ok();\n');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.operator).toBe('==');
+  });
+
+  it('flags Buffer.compare and Buffer.equals over a token', () => {
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.ts', 'if (Buffer.compare(sessionToken, supplied) === 0) ok();\n')).toHaveLength(1);
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.ts', 'if (storedSecret.equals(given)) ok();\n')).toHaveLength(1);
+  });
+
+  it('exempts the length guard that precedes timingSafeEqual', () => {
+    const src = [
+      "import { timingSafeEqual } from 'node:crypto';",
+      'export function same(a: Buffer, givenToken: Buffer): boolean {',
+      '  if (a.length !== givenToken.length) return false;',
+      '  return timingSafeEqual(a, givenToken);',
+      '}',
+      '',
+    ].join('\n');
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.ts', src)).toHaveLength(0);
+  });
+
+  it('does not let an import of timingSafeEqual silence the rest of the module', () => {
+    const src = [
+      "import { timingSafeEqual } from 'node:crypto';",
+      'export function safe(a: Buffer, givenToken: Buffer): boolean {',
+      '  return timingSafeEqual(a, givenToken);',
+      '}',
+      'export function unsafe(apiKey: string, supplied: string): boolean {',
+      '  return apiKey === supplied;',
+      '}',
+      '',
+    ].join('\n');
+    const hits = scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.ts', src);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.line).toBe(6);
+  });
+
+  it('ignores an unkeyed content hash, which is not a timing oracle', () => {
+    const src = ['const computedHash = await sha256Hex(content);', 'if (computedHash !== claimedHash) fail();', ''].join('\n');
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/verify.ts', src)).toHaveLength(0);
+  });
+
+  it('flags the same comparison once the digest is keyed', () => {
+    const src = hmacFile(["const computedMac = createHmac('sha256', key).update(body).digest('hex');", 'if (computedMac !== claimedMac) fail();', ''].join('\n'));
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/verify.ts', src)).toHaveLength(1);
+  });
+
+  it('ignores public keys, lengths, null checks and typeof guards', () => {
+    const src = [
+      'if (embeddedPublicKey !== pinnedPublicKey) warn();',
+      'if (claimedHash.length === 64) ok();',
+      'if (privateKey !== undefined) use();',
+      "if (typeof raw.hash === 'string') ok();",
+      '',
+    ].join('\n');
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.ts', src)).toHaveLength(0);
+  });
+
+  it('ignores metadata about a secret rather than the secret', () => {
+    const src = ['const selected = secret.id === selectedId;', 'const label = item.type === secret.type;', 'if (token.kind !== expectedKind) skip();', ''].join('\n');
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/SecretsPanel.tsx', src)).toHaveLength(0);
+  });
+
+  it('ignores a password compared against its own confirmation field', () => {
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/ResetPassword.tsx', 'if (password !== confirm) fail();\n')).toHaveLength(0);
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.tsx', 'if (confirmPassword !== password) fail();\n')).toHaveLength(0);
+  });
+
+  it('ignores a field-to-field config equality check', () => {
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/client.ts', 'return this.apiKey === options.apiKey;\n')).toHaveLength(0);
+  });
+
+  it('ignores "signature" used as a fingerprint in a file that does no crypto', () => {
+    const src = ['const signature = buildDiagnosticsSignature(group);', 'if (signature !== previous) changed = true;', ''].join('\n');
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/autoHealer.ts', src)).toHaveLength(0);
+  });
+
+  it('downgrades to Low when every site is in a test', () => {
+    const hits = scan('SEC-TIMING-UNSAFE-COMPARE', 'test/a.test.ts', 'expect(apiKey === supplied).toBe(true);\n', true);
+    expect(hits).toHaveLength(1);
+    expect(ruleById('SEC-TIMING-UNSAFE-COMPARE')!.severityFor!(hits)).toBe('Low');
+  });
+
+  it('ignores a construct that only appears in a comment', () => {
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.ts', '// never write `apiKey === supplied`\nconst x = 1;\n')).toHaveLength(0);
+  });
+});
+
+describe('SEC-CRYPTO-IV-REUSE', () => {
+  it('flags a module-level constant IV', () => {
+    const src = ["const IV = Buffer.from('00112233445566778899aabb', 'hex');", "const c = createCipheriv('aes-256-gcm', key, IV);", ''].join('\n');
+    const hits = scan('SEC-CRYPTO-IV-REUSE', 'src/crypt.ts', src);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.kind).toBe('static');
+  });
+
+  it('flags a zero-filled IV passed inline', () => {
+    const hits = scan('SEC-CRYPTO-IV-REUSE', 'src/crypt.ts', "const c = createCipheriv('aes-256-gcm', key, Buffer.alloc(12));\n");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.kind).toBe('static');
+  });
+
+  it('flags a CSPRNG nonce drawn once at module scope and reused', () => {
+    const src = ['const NONCE = randomBytes(12);', "function seal(p) { return createCipheriv('aes-256-gcm', key, NONCE); }", ''].join('\n');
+    const hits = scan('SEC-CRYPTO-IV-REUSE', 'src/crypt.ts', src);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.kind).toBe('module-scope');
+  });
+
+  it('flags a clock-derived nonce', () => {
+    const hits = scan('SEC-CRYPTO-IV-REUSE', 'src/crypt.ts', "const c = createCipheriv('aes-256-gcm', key, Buffer.from(String(Date.now())));\n");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.kind).toBe('predictable');
+  });
+
+  it('flags ECB from the cipher name', () => {
+    const hits = scan('SEC-CRYPTO-IV-REUSE', 'src/crypt.ts', "const c = createCipheriv('aes-256-ecb', key, Buffer.alloc(0));\n");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.kind).toBe('ecb');
+  });
+
+  it('flags a zero IV in a WebCrypto algorithm object', () => {
+    const hits = scan('SEC-CRYPTO-IV-REUSE', 'src/crypt.ts', "await crypto.subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(12) }, key, data);\n");
+    expect(hits).toHaveLength(1);
+  });
+
+  it('accepts a per-call CSPRNG nonce', () => {
+    const src = ['function seal(p) {', '  const iv = randomBytes(12);', "  return createCipheriv('aes-256-gcm', key, iv);", '}', ''].join('\n');
+    expect(scan('SEC-CRYPTO-IV-REUSE', 'src/crypt.ts', src)).toHaveLength(0);
+  });
+
+  it('accepts an inline CSPRNG nonce in a WebCrypto call', () => {
+    expect(scan('SEC-CRYPTO-IV-REUSE', 'src/crypt.ts', "await crypto.subtle.encrypt({ name: 'AES-GCM', iv: crypto.getRandomValues(new Uint8Array(12)) }, key, data);\n")).toHaveLength(0);
+  });
+
+  it('ignores an iv property that belongs to no cipher', () => {
+    expect(scan('SEC-CRYPTO-IV-REUSE', 'src/ui.ts', "const layout = { iv: 'auto', counter: 0 };\n")).toHaveLength(0);
+  });
+
+  it('never claims an automatable fix, because the ciphertext format changes', () => {
+    const plan = ruleById('SEC-CRYPTO-IV-REUSE')!.fixPlan([{ ruleId: 'SEC-CRYPTO-IV-REUSE', file: 'src/a.ts', line: 1, excerpt: 'x', message: 'm' }], repoCtx({}));
+    expect(plan.agentExecutable).toBe(false);
+    expect(plan.notAgentExecutableReason).toMatch(/undecryptable|data/i);
+  });
+});
+
+describe('SEC-WEBCRYPTO-MISUSE', () => {
+  it('flags an extractable private signing key', () => {
+    const hits = scan('SEC-WEBCRYPTO-MISUSE', 'src/keys.ts', "await crypto.subtle.importKey('pkcs8', der, { name: 'Ed25519' }, true, ['sign']);\n");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.kind).toBe('extractable-private-key');
+  });
+
+  it('accepts an extractable public verification key', () => {
+    expect(scan('SEC-WEBCRYPTO-MISUSE', 'src/keys.ts', "await crypto.subtle.importKey('spki', der, { name: 'Ed25519' }, true, ['verify']);\n")).toHaveLength(0);
+  });
+
+  it('accepts a non-extractable private key', () => {
+    expect(scan('SEC-WEBCRYPTO-MISUSE', 'src/keys.ts', "await crypto.subtle.importKey('pkcs8', der, { name: 'Ed25519' }, false, ['sign']);\n")).toHaveLength(0);
+  });
+
+  it('flags SHA-1 named as an algorithm parameter', () => {
+    const hits = scan('SEC-WEBCRYPTO-MISUSE', 'src/a.ts', "await crypto.subtle.digest('SHA-1', bytes);\n");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.algorithm).toBe('SHA-1');
+  });
+
+  it('leaves createHash("md5") to SEC-WEAK-CRYPTO rather than double-reporting it', () => {
+    expect(scan('SEC-WEBCRYPTO-MISUSE', 'src/a.ts', "crypto.createHash('md5').update(name).digest('hex');\n")).toHaveLength(0);
+    expect(scan('SEC-WEAK-CRYPTO', 'src/a.ts', "crypto.createHash('md5').update(name).digest('hex');\n")).toHaveLength(1);
+  });
+
+  it('flags a PBKDF2 cost below the floor and accepts one above it', () => {
+    const weak = scan('SEC-WEBCRYPTO-MISUSE', 'src/a.ts', "await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 1000, hash: 'SHA-256' }, base, 256);\n");
+    expect(weak.filter((h) => h.meta?.kind === 'weak-kdf')).toHaveLength(1);
+    expect(scan('SEC-WEBCRYPTO-MISUSE', 'src/a.ts', "await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 600000, hash: 'SHA-256' }, base, 256);\n")).toHaveLength(0);
+  });
+
+  it('ignores an iteration count that has nothing to do with a KDF', () => {
+    expect(scan('SEC-WEBCRYPTO-MISUSE', 'src/a.ts', 'const opts = { iterations: 3, backoffMs: 200 };\n')).toHaveLength(0);
+  });
+
+  it('flags a truncated AES-GCM tag', () => {
+    const hits = scan('SEC-WEBCRYPTO-MISUSE', 'src/a.ts', "await crypto.subtle.encrypt({ name: 'AES-GCM', iv, tagLength: 32 }, key, data);\n");
+    expect(hits.filter((h) => h.meta?.kind === 'short-tag')).toHaveLength(1);
+  });
+
+  it('refuses to automate a digest or KDF change, because stored values depend on it', () => {
+    const rule = ruleById('SEC-WEBCRYPTO-MISUSE')!;
+    const kdf = rule.fixPlan([{ ruleId: rule.id, file: 'src/a.ts', line: 1, excerpt: 'x', message: 'm', meta: { kind: 'weak-kdf' } }], repoCtx({}));
+    expect(kdf.agentExecutable).toBe(false);
+    const flag = rule.fixPlan([{ ruleId: rule.id, file: 'src/a.ts', line: 1, excerpt: 'x', message: 'm', meta: { kind: 'extractable-private-key' } }], repoCtx({}));
+    expect(flag.agentExecutable).toBe(true);
+    expect(flag.agentPrompt).toBeTruthy();
+  });
+});
+
+describe('SEC-SIGNATURE-VERIFY-DISCARDED', () => {
+  it('flags a verification call used as a bare statement', () => {
+    const src = ['async function ingest(log, key, sig) {', '  await verifySignature(log, key, sig);', '  accept(log);', '}', ''].join('\n');
+    const hits = scan('SEC-SIGNATURE-VERIFY-DISCARDED', 'src/ingest.ts', src);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.kind).toBe('result-discarded');
+    expect(ruleById('SEC-SIGNATURE-VERIFY-DISCARDED')!.severityFor!(hits)).toBe('Blocker');
+  });
+
+  it('accepts a verification result that is used', () => {
+    const src = [
+      'const ok = await verifyLog(content, { publicKey });',
+      'if (!(await verifySignature(a, b, c))) throw new Error("bad signature");',
+      'return timingSafeEqual(a, b);',
+      '',
+    ].join('\n');
+    expect(scan('SEC-SIGNATURE-VERIFY-DISCARDED', 'src/a.ts', src)).toHaveLength(0);
+  });
+
+  it('accepts a callback-style verify, which reports through its callback', () => {
+    expect(scan('SEC-SIGNATURE-VERIFY-DISCARDED', 'src/a.ts', 'jwt.verify(token, secret, (err, decoded) => done(err, decoded));\n')).toHaveLength(0);
+  });
+
+  it('flags a catch that turns failed verification into success', () => {
+    const src = [
+      'async function checkSig(log, key, sig) {',
+      '  try {',
+      "    return await crypto.subtle.verify('Ed25519', key, sig, log);",
+      '  } catch {',
+      '    return true;',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    const hits = scan('SEC-SIGNATURE-VERIFY-DISCARDED', 'src/a.ts', src);
+    expect(hits.filter((h) => h.meta?.kind === 'fail-open-catch')).toHaveLength(1);
+  });
+
+  it('accepts a negative predicate whose catch returns true to fail closed', () => {
+    const src = [
+      'function isTokenExpired(token: string): boolean {',
+      '  try {',
+      '    const decoded = this.parseJwtClaims(token);',
+      '    if (!decoded) return true;',
+      '    return decoded.exp * 1000 < Date.now();',
+      '  } catch {',
+      '    return true;',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    expect(scan('SEC-SIGNATURE-VERIFY-DISCARDED', 'src/auth.ts', src)).toHaveLength(0);
+  });
+
+  it('flags a runtime switch that can turn verification off, once per line', () => {
+    const hits = scan('SEC-SIGNATURE-VERIFY-DISCARDED', 'src/a.ts', "export const SKIP_SIGNATURE_VERIFICATION = process.env.SKIP_SIGNATURE_VERIFICATION === '1';\n");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.kind).toBe('bypass-switch');
+    expect(ruleById('SEC-SIGNATURE-VERIFY-DISCARDED')!.severityFor!(hits)).toBe('High');
+  });
+
+  it('flags the none algorithm being accepted', () => {
+    const hits = scan('SEC-SIGNATURE-VERIFY-DISCARDED', 'src/a.ts', "jwt.verify(t, k, { algorithms: ['none'] });\n");
+    expect(hits.filter((h) => h.meta?.kind === 'alg-none')).toHaveLength(1);
+  });
+
+  it('treats a bypass switch as advisory and everything else as automatable', () => {
+    const rule = ruleById('SEC-SIGNATURE-VERIFY-DISCARDED')!;
+    const onlySwitch = rule.fixPlan([{ ruleId: rule.id, file: 'src/a.ts', line: 1, excerpt: 'x', message: 'm', meta: { kind: 'bypass-switch' } }], repoCtx({}));
+    expect(onlySwitch.agentExecutable).toBe(false);
+    const discarded = rule.fixPlan([{ ruleId: rule.id, file: 'src/a.ts', line: 1, excerpt: 'x', message: 'm', meta: { kind: 'result-discarded' } }], repoCtx({}));
+    expect(discarded.agentExecutable).toBe(true);
+  });
+});
+
+describe('crypto rule helpers', () => {
+  it('splits identifiers into words without catching lookalikes', () => {
+    expect(wordTokens('claimedSig')).toEqual(['claimed', 'sig']);
+    expect(wordTokens('raw.prevHash')).toEqual(['raw', 'prev', 'hash']);
+    expect(wordTokens('AUTH_TAG')).toEqual(['auth', 'tag']);
+    expect(classifyOperand('signal')).toBeNull();
+    expect(classifyOperand('macOsVersion')).toBeNull();
+  });
+
+  it('treats public key material as public', () => {
+    expect(classifyOperand('embeddedPublicKey')).toBeNull();
+    expect(classifyOperand('pubkey')).toBeNull();
+  });
+
+  it('requires a crypto context before believing "signature" means a signature', () => {
+    expect(classifyOperand('signature', false)).toBeNull();
+    expect(classifyOperand('signature', true)).toBe('keyed');
+    expect(classifyOperand('apiKey', false)).toBe('keyed');
+  });
+
+  it('recognises a field-to-field comparison', () => {
+    expect(sameFieldComparison('this.apiKey', 'options.apiKey')).toBe(true);
+    expect(sameFieldComparison('expectedSignature', 'header')).toBe(false);
+    expect(sameFieldComparison('a.token', 'b.supplied')).toBe(false);
+  });
+
+  it('only exempts a catch inside a negative predicate', () => {
+    expect(negativePredicateName('function isTokenExpired(token: string): boolean {')).toBe(true);
+    expect(negativePredicateName('function verifySignature(log, key, sig) {')).toBe(false);
+    expect(negativePredicateName('no function here')).toBe(false);
+  });
+});
+
 describe('SEC-HTTP-ENDPOINT', () => {
   it('flags a routable plaintext host', () => {
     const hits = scan('SEC-HTTP-ENDPOINT', 'src/a.ts', "const api = 'http://api.production.io/v1';\n");
@@ -319,7 +638,6 @@ describe('aggregate rules', () => {
   it('SEC-CSP-MISSING does not fire for a non-web project', () => {
     expect(aggregate('SEC-CSP-MISSING', { 'src/index.ts': 'export const a = 1;\n' })).toHaveLength(0);
   });
-
   it('SEC-SOURCEMAP-PUBLISHED ignores a mode-gated setting', () => {
     const gated = aggregate('SEC-SOURCEMAP-PUBLISHED', { 'vite.config.ts': 'export default { build: { sourcemap: mode === "development" ? true : false } };\n' });
     expect(gated).toHaveLength(0);

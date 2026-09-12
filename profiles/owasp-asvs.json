@@ -49,6 +49,23 @@
       { "id": "ASVS 6.2.2", "title": "Industry-proven cryptographic algorithms are used" },
       { "id": "ASVS 6.3.1", "title": "Random values use a cryptographically secure generator" }
     ],
+    "SEC-TIMING-UNSAFE-COMPARE": [
+      { "id": "ASVS 6.2.8", "title": "All cryptographic comparisons are constant-time" },
+      { "id": "ASVS 2.9.3", "title": "Verification of cryptographic authenticators resists side channels" }
+    ],
+    "SEC-CRYPTO-IV-REUSE": [
+      { "id": "ASVS 6.2.5", "title": "Insecure block modes and unsafe padding are not used" },
+      { "id": "ASVS 6.2.6", "title": "Nonces and initialisation vectors are not reused with a static key" }
+    ],
+    "SEC-WEBCRYPTO-MISUSE": [
+      { "id": "ASVS 6.2.2", "title": "Industry-proven cryptographic algorithms are used" },
+      { "id": "ASVS 6.4.1", "title": "Key material is protected from unauthorised access" },
+      { "id": "ASVS 2.4.1", "title": "Approved key derivation with adequate cost parameters" }
+    ],
+    "SEC-SIGNATURE-VERIFY-DISCARDED": [
+      { "id": "ASVS 6.2.1", "title": "Cryptographic modules fail securely and errors are handled correctly" },
+      { "id": "ASVS 3.5.2", "title": "Signed tokens are verified and unsigned algorithms rejected" }
+    ],
     "SEC-EVAL": [
       { "id": "ASVS 5.2.4", "title": "Dynamic code execution features are avoided" }
     ],

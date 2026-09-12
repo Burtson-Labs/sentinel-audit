@@ -45,6 +45,19 @@
     "SEC-WEAK-CRYPTO": [
       { "id": "ENG-SEC-CRYPTO-01", "title": "Only approved algorithms and CSPRNGs are used" }
     ],
+    "SEC-TIMING-UNSAFE-COMPARE": [
+      { "id": "ENG-SEC-CRYPTO-02", "title": "Secrets and signatures are compared in constant time" }
+    ],
+    "SEC-CRYPTO-IV-REUSE": [
+      { "id": "ENG-SEC-CRYPTO-03", "title": "Authenticated encryption with a unique per-message nonce" }
+    ],
+    "SEC-WEBCRYPTO-MISUSE": [
+      { "id": "ENG-SEC-CRYPTO-01", "title": "Only approved algorithms and CSPRNGs are used" },
+      { "id": "ENG-SEC-CRYPTO-04", "title": "Private key material is non-exportable" }
+    ],
+    "SEC-SIGNATURE-VERIFY-DISCARDED": [
+      { "id": "ENG-SEC-CRYPTO-05", "title": "Signature verification failures are fatal and cannot be bypassed" }
+    ],
     "SEC-EVAL": [
       { "id": "ENG-SEC-INPUT-05", "title": "No dynamic code evaluation of runtime data" }
     ],
