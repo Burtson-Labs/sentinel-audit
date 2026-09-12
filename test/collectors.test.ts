@@ -1,0 +1,370 @@
+import { describe, it, expect } from 'vitest';
+import { parseAuditJson, copyleftDependencies } from '../src/collectors/dependencies.js';
+import { scanText, triageCandidate, SECRET_RULES } from '../src/collectors/secrets.js';
+import { summariseWorkflow, gateSatisfied } from '../src/collectors/ci.js';
+import { analyseDockerfile } from '../src/collectors/docker.js';
+import { parseYaml, tryParseYaml } from '../src/util/yaml.js';
+import { satisfies, compare, parse as parseSemver } from '../src/util/semver.js';
+import { shannonEntropy, maskSecret } from '../src/util/hash.js';
+import type { SecretCandidate, CiResult } from '../src/types.js';
+
+describe('parseAuditJson', () => {
+  it('reads the npm v7+ report shape', () => {
+    const doc = {
+      auditReportVersion: 2,
+      vulnerabilities: {
+        axios: {
+          name: 'axios',
+          severity: 'high',
+          isDirect: true,
+          range: '<1.12.0',
+          via: [{ name: 'axios', severity: 'high', title: 'Proxy reuse', url: 'https://example.org/a', range: '<1.12.0', cwe: ['CWE-918'] }],
+          fixAvailable: true,
+        },
+      },
+    };
+    const records = parseAuditJson(JSON.stringify(doc));
+    expect(records).not.toBeNull();
+    expect(records).toHaveLength(1);
+    expect(records![0]!.module).toBe('axios');
+    expect(records![0]!.severity).toBe('high');
+    expect(records![0]!.path).toBe('direct');
+    expect(records![0]!.cwe).toContain('CWE-918');
+  });
+
+  it('reads the npm v6 / advisories shape', () => {
+    const doc = {
+      advisories: {
+        '1234': { module_name: 'lodash', severity: 'critical', title: 'Prototype pollution', url: 'u', vulnerable_versions: '<4.17.21', cwe: 'CWE-1321' },
+      },
+    };
+    const records = parseAuditJson(JSON.stringify(doc));
+    expect(records![0]!.module).toBe('lodash');
+    expect(records![0]!.severity).toBe('critical');
+  });
+
+  it('reads newline-delimited advisory objects', () => {
+    const ndjson = [
+      JSON.stringify({ advisory: { module_name: 'a', severity: 'moderate', title: 'x', vulnerable_versions: '<1' } }),
+      JSON.stringify({ advisory: { module_name: 'b', severity: 'low', title: 'y', vulnerable_versions: '<2' } }),
+    ].join('\n');
+    const records = parseAuditJson(ndjson);
+    expect(records).toHaveLength(2);
+  });
+
+  it('sorts by severity, worst first', () => {
+    const doc = {
+      advisories: {
+        '1': { module_name: 'low-one', severity: 'low', title: 'l' },
+        '2': { module_name: 'crit-one', severity: 'critical', title: 'c' },
+      },
+    };
+    const records = parseAuditJson(JSON.stringify(doc))!;
+    expect(records[0]!.severity).toBe('critical');
+  });
+
+  it('returns null for output it cannot read, so the caller reports a gap', () => {
+    expect(parseAuditJson('not json at all')).toBeNull();
+  });
+
+  it('de-duplicates identical advisories', () => {
+    const doc = {
+      advisories: {
+        '1': { module_name: 'a', severity: 'high', title: 'same' },
+        '2': { module_name: 'a', severity: 'high', title: 'same' },
+      },
+    };
+    expect(parseAuditJson(JSON.stringify(doc))).toHaveLength(1);
+  });
+});
+
+describe('copyleftDependencies', () => {
+  it('finds strong-copyleft licences and ignores permissive ones', () => {
+    const deps = [
+      { name: 'a', version: '1', dev: false, license: 'MIT', direct: true },
+      { name: 'b', version: '1', dev: false, license: 'AGPL-3.0', direct: true },
+      { name: 'c', version: '1', dev: false, license: 'GPL-3.0-only', direct: true },
+      { name: 'd', version: '1', dev: false, license: 'Apache-2.0', direct: true },
+      { name: 'e', version: '1', dev: false, license: null, direct: true },
+    ];
+    const hits = copyleftDependencies(deps).map((d) => d.name);
+    expect(hits).toEqual(['b', 'c']);
+  });
+});
+
+describe('secret scanning', () => {
+  const run = (path: string, text: string): SecretCandidate[] => {
+    const out: SecretCandidate[] = [];
+    scanText(path, text, out);
+    return out;
+  };
+
+  it('finds a GitHub token and does not suppress it', () => {
+    const hits = run('src/a.ts', `const t = 'ghp_${'a'.repeat(36)}';\n`);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.likelyFalsePositive).toBe(false);
+  });
+
+  it('never emits the raw value', () => {
+    const secret = `ghp_${'b'.repeat(36)}`;
+    const hits = run('src/a.ts', `const t = '${secret}';\n`);
+    expect(hits[0]!.masked).not.toContain(secret);
+    expect(hits[0]!.masked).toContain('*');
+  });
+
+  it('suppresses a URL whose credential is a variable reference', () => {
+    const hits = run('.github/workflows/x.yml', 'git clone "https://x-access-token:${WEBSITE_TOKEN}@github.com/o/r.git"\n');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.likelyFalsePositive)).toBe(true);
+    expect(hits[0]!.falsePositiveReason).toMatch(/variable reference/);
+  });
+
+  it('suppresses a storage-key name held in a *_KEY constant', () => {
+    const hits = run('src/a.ts', "const TOKEN_KEY = 'app.authToken';\n");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.likelyFalsePositive)).toBe(true);
+    expect(hits[0]!.falsePositiveReason).toMatch(/name|identifier/);
+  });
+
+  it('suppresses a value read from the environment', () => {
+    const hits = run('src/a.ts', "const apiKey = process.env.API_KEY ?? 'unset-placeholder';\n");
+    expect(hits.every((h) => h.likelyFalsePositive)).toBe(true);
+  });
+
+  it('always records a reason when it suppresses', () => {
+    const hits = run('.env.example', "API_SECRET='your-secret-here'\n");
+    for (const h of hits.filter((x) => x.likelyFalsePositive)) {
+      expect(h.falsePositiveReason, 'a suppression without a reason is a bug').toBeTruthy();
+    }
+  });
+
+  it('finds a private key block', () => {
+    const hits = run('key.pem', '-----BEGIN RSA PRIVATE KEY-----\nabc\n');
+    expect(hits.some((h) => h.ruleId === 'SECRET-private-key-block')).toBe(true);
+  });
+
+  it('finds a connection string with inline credentials', () => {
+    const hits = run('src/a.ts', "const u = 'mongodb+srv://admin:R3alP4ssw0rd!@cluster.example.net/db';\n");
+    expect(hits.some((h) => !h.likelyFalsePositive)).toBe(true);
+  });
+
+  it('keeps every rule regex anchored enough to have a capture group', () => {
+    for (const r of SECRET_RULES) {
+      expect(r.group, r.id).toBeGreaterThanOrEqual(1);
+      expect(r.description.length, r.id).toBeGreaterThan(5);
+    }
+  });
+});
+
+describe('triageCandidate', () => {
+  const rule = SECRET_RULES.find((r) => r.id === 'generic-assigned-secret')!;
+  const base = { rule, lineText: '', entropy: 4.5, isExample: false, isFixture: false, path: 'src/a.ts' };
+
+  it('suppresses placeholder words', () => {
+    expect(triageCandidate({ ...base, value: 'your-token-here' }).suppress).toBe(true);
+  });
+
+  it('suppresses low-entropy generic matches', () => {
+    expect(triageCandidate({ ...base, value: 'aaaaaaaaaaaaaa', entropy: 0.5 }).suppress).toBe(true);
+  });
+
+  it('keeps a high-entropy random value', () => {
+    expect(triageCandidate({ ...base, value: 'xQ4$vB9#mL2@pR7!kT5%' }).suppress).toBe(false);
+  });
+});
+
+describe('CI workflow analysis', () => {
+  it('detects gates that actually gate', () => {
+    const wf = `name: ci
+on:
+  pull_request:
+jobs:
+  build:
+    steps:
+      - uses: actions/checkout@v4
+      - run: pnpm install
+      - run: pnpm test
+      - run: pnpm lint
+`;
+    const summary = summariseWorkflow('.github/workflows/ci.yml', wf);
+    expect(summary.name).toBe('ci');
+    expect(summary.triggers).toContain('pull_request');
+    expect(summary.gates.test).toBe(true);
+    expect(summary.gates.lint).toBe(true);
+    expect(summary.gates.audit).toBe(false);
+  });
+
+  it('treats continue-on-error as not gating', () => {
+    const wf = `name: ci
+on: [pull_request]
+jobs:
+  build:
+    steps:
+      - run: pnpm test
+        continue-on-error: true
+`;
+    expect(summariseWorkflow('.github/workflows/ci.yml', wf).gates.test).toBe(false);
+  });
+
+  it('treats "|| true" as not gating', () => {
+    const wf = `name: ci
+on: [pull_request]
+jobs:
+  build:
+    steps:
+      - run: pnpm audit || true
+`;
+    expect(summariseWorkflow('.github/workflows/ci.yml', wf).gates.audit).toBe(false);
+  });
+
+  it('recognises security scanners', () => {
+    const wf = `name: sec
+on: [pull_request]
+jobs:
+  s:
+    steps:
+      - uses: github/codeql-action/analyze@v3
+      - run: gitleaks detect
+`;
+    const s = summariseWorkflow('.github/workflows/sec.yml', wf);
+    expect(s.gates.sast).toBe(true);
+    expect(s.gates.secrets).toBe(true);
+  });
+
+  it('falls back to text scanning when YAML parsing fails, rather than claiming no gates', () => {
+    const broken = "name: ci\n\ton: bad\n      - run: pnpm test\n";
+    const s = summariseWorkflow('.github/workflows/ci.yml', broken);
+    expect(s.parseError).toBeTruthy();
+    expect(s.gates.test).toBe(true);
+  });
+
+  it('gateSatisfied requires a PR-or-push trigger by default', () => {
+    const ci: CiResult = {
+      workflows: [
+        {
+          file: 'a.yml',
+          name: 'release',
+          triggers: ['release'],
+          permissions: null,
+          jobs: [],
+          gates: { test: true, lint: false, typecheck: false, audit: false, sast: false, secrets: false },
+        },
+      ],
+      hasRequiredStatusCheckHint: false,
+      unpinnedActions: [],
+      riskyTriggers: [],
+    };
+    expect(gateSatisfied(ci, 'test')).toBe(false);
+    expect(gateSatisfied(ci, 'test', false)).toBe(true);
+  });
+});
+
+describe('Dockerfile analysis', () => {
+  it('reports root when no USER is set', () => {
+    const d = analyseDockerfile('Dockerfile', 'FROM node:22\nCOPY . .\nCMD ["node","x.js"]\n');
+    expect(d.runsAsRoot).toBe(true);
+    expect(d.baseImages[0]!.pinned).toBe(false);
+  });
+
+  it('respects a USER in the final stage', () => {
+    const d = analyseDockerfile('Dockerfile', 'FROM node:22\nUSER node\nCMD ["node","x.js"]\n');
+    expect(d.runsAsRoot).toBe(false);
+  });
+
+  it('ignores a USER in an earlier build stage — the final stage decides', () => {
+    const df = ['FROM node:22 AS builder', 'USER node', 'RUN npm ci', '', 'FROM nginx:alpine', 'COPY --from=builder /app /usr/share/nginx/html', ''].join('\n');
+    const d = analyseDockerfile('Dockerfile', df);
+    expect(d.runsAsRoot).toBe(true);
+  });
+
+  it('does not count a stage reference as an external base image', () => {
+    const df = ['FROM node:22 AS builder', 'FROM builder AS test', ''].join('\n');
+    const d = analyseDockerfile('Dockerfile', df);
+    expect(d.baseImages).toHaveLength(1);
+  });
+
+  it('recognises digest pinning', () => {
+    const d = analyseDockerfile('Dockerfile', 'FROM node@sha256:abc123\nUSER node\n');
+    expect(d.baseImages[0]!.pinned).toBe(true);
+  });
+
+  it('flags credential-shaped build arguments', () => {
+    const d = analyseDockerfile('Dockerfile', 'FROM node:22\nARG NPM_TOKEN\nENV API_SECRET=x\nUSER node\n');
+    expect(d.secretsInArgs.map((s) => s.name)).toEqual(['NPM_TOKEN', 'API_SECRET']);
+  });
+});
+
+describe('yaml subset parser', () => {
+  it('parses nested maps and sequences', () => {
+    const doc = parseYaml('a:\n  b: 1\n  c:\n    - x\n    - y\n') as Record<string, unknown>;
+    expect(doc.a).toEqual({ b: 1, c: ['x', 'y'] });
+  });
+
+  it('parses a sequence of maps', () => {
+    const doc = parseYaml('steps:\n  - name: one\n    run: echo 1\n  - name: two\n    uses: a/b@v1\n') as { steps: unknown[] };
+    expect(doc.steps).toHaveLength(2);
+    expect(doc.steps[1]).toEqual({ name: 'two', uses: 'a/b@v1' });
+  });
+
+  it('parses inline flow sequences', () => {
+    expect(parseYaml('on: [push, pull_request]\n')).toEqual({ on: ['push', 'pull_request'] });
+  });
+
+  it('parses block scalars', () => {
+    const doc = parseYaml('run: |\n  line one\n  line two\n') as { run: string };
+    expect(doc.run).toBe('line one\nline two');
+  });
+
+  it('strips comments outside quotes but not inside', () => {
+    const doc = parseYaml('a: 1 # trailing\nb: "has # inside"\n') as Record<string, unknown>;
+    expect(doc.a).toBe(1);
+    expect(doc.b).toBe('has # inside');
+  });
+
+  it('coerces YAML 1.1 booleans', () => {
+    expect(parseYaml('a: yes\nb: off\n')).toEqual({ a: true, b: false });
+  });
+
+  it('reports an error instead of guessing', () => {
+    expect(tryParseYaml('\ta: 1\n').error).toBeTruthy();
+  });
+});
+
+describe('semver subset', () => {
+  it('compares versions including prereleases', () => {
+    expect(compare(parseSemver('1.2.3')!, parseSemver('1.2.4')!)).toBe(-1);
+    expect(compare(parseSemver('1.2.3')!, parseSemver('1.2.3')!)).toBe(0);
+    expect(compare(parseSemver('1.2.3-rc.1')!, parseSemver('1.2.3')!)).toBe(-1);
+    expect(compare(parseSemver('2.0.0')!, parseSemver('1.9.9')!)).toBe(1);
+  });
+
+  it('evaluates the comparator ranges npm audit emits', () => {
+    expect(satisfies('1.11.0', '<1.12.0')).toBe(true);
+    expect(satisfies('1.12.0', '<1.12.0')).toBe(false);
+    expect(satisfies('1.5.0', '>=1.0.0 <1.6.0')).toBe(true);
+    expect(satisfies('1.7.0', '>=1.0.0 <1.6.0')).toBe(false);
+    expect(satisfies('2.0.0', '<1.0.0 || >=3.0.0')).toBe(false);
+    expect(satisfies('3.1.0', '<1.0.0 || >=3.0.0')).toBe(true);
+    expect(satisfies('1.0.0', '*')).toBe(true);
+  });
+
+  it('returns null for syntax it does not implement, so nothing is wrongly cleared', () => {
+    expect(satisfies('1.2.3', '^1.0.0')).toBeNull();
+    expect(satisfies('1.2.3', '~1.2.0')).toBeNull();
+    expect(satisfies('1.2.3', '1.x')).toBeNull();
+    expect(satisfies('not-a-version', '<2.0.0')).toBeNull();
+  });
+});
+
+describe('entropy and masking', () => {
+  it('scores random strings above repetitive ones', () => {
+    expect(shannonEntropy('aaaaaaaa')).toBeLessThan(shannonEntropy('a8Fk2Lp9'));
+  });
+
+  it('masks while keeping a recognisable prefix and the length', () => {
+    const masked = maskSecret('abcdefghijklmnopqrstuvwxyz');
+    expect(masked.startsWith('abc')).toBe(true);
+    expect(masked).toContain('len=26');
+    expect(masked).not.toContain('defghij');
+  });
+});
