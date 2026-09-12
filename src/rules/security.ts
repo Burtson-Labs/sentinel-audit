@@ -564,16 +564,35 @@ export const weakCryptoRule: Rule = {
     const benign = hits.every((h) => h.meta?.observabilityOnly === true || h.meta?.csprngFallback === true);
     return benign ? 'Low' : 'Medium';
   },
-  fixPlan: (hits) => ({
+  fixPlan: (hits) => {
+    // When every hit is a documented CSPRNG fallback or an observability id,
+    // there is no mechanical change to make — the primary path is already
+    // correct, and an agent "fixing" it would delete a deliberate fallback.
+    const nothingMechanical = hits.every((h) => h.meta?.csprngFallback === true || h.meta?.observabilityOnly === true);
+    if (nothingMechanical) {
+      return {
+        agentExecutable: false,
+        strategy:
+          'No code change is indicated. Each site is either a fallback branch that only runs where no CSPRNG exists, or an identifier whose risk is collision rather than guessability. Record the decision in a comment so the next reader does not re-raise it.',
+        changes: uniquePaths(hits).map((p) => ({ path: p, change: 'annotate why the non-cryptographic primitive is correct here' })),
+        acceptanceTests: [{ path: 'n/a', description: 'no behaviour change; the annotation prevents the finding being re-raised' }],
+        risk: 'low' as const,
+        estimatedDiffSize: 'a comment per site',
+        notAgentExecutableReason:
+          'Every site is already correct: the primary path uses a CSPRNG and the flagged line is the documented fallback. An agent rewriting it would remove a deliberate degradation path.',
+      };
+    }
+    return {
     agentExecutable: true,
     strategy: 'Replace broken primitives: SHA-256 for hashing, crypto.randomUUID()/getRandomValues for random material, createCipheriv with AES-GCM for encryption.',
     changes: uniquePaths(hits).map((p) => ({ path: p, change: 'swap the weak primitive for the modern equivalent' })),
     acceptanceTests: [{ path: 'test/security/crypto.test.ts', description: 'no MD5/SHA-1/Math.random in security paths; random values are unique across many draws' }],
-    risk: 'low',
+    risk: 'low' as const,
     estimatedDiffSize: 'one line per site',
     agentPrompt:
-      'Replace each flagged weak primitive. createHash("md5"|"sha1") becomes createHash("sha256") unless the value is a cache key, in which case add a comment saying the hash is non-cryptographic and leave it. Math.random() in a security-relevant context becomes crypto.randomUUID() or crypto.getRandomValues on a Uint8Array. createCipher/createDecipher becomes createCipheriv/createDecipheriv with aes-256-gcm and an explicit random IV. Keep output formats stable where persisted data depends on them, and say so in the PR body if you cannot.',
-  }),
+      'Replace each flagged weak primitive. createHash("md5"|"sha1") becomes createHash("sha256") unless the value is a cache key, in which case add a comment saying the hash is non-cryptographic and leave it. Math.random() in a security-relevant context becomes crypto.randomUUID() or crypto.getRandomValues on a Uint8Array. createCipher/createDecipher becomes createCipheriv/createDecipheriv with aes-256-gcm and an explicit random IV. Keep output formats stable where persisted data depends on them, and say so in the PR body if you cannot. Do not remove a fallback branch that exists for environments without a CSPRNG.',
+    };
+  },
 };
 
 export const evalRule: Rule = {

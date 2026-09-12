@@ -357,3 +357,21 @@ describe('isVendoredArtifact', () => {
     expect(isVendoredArtifact('public/exthost.cjs', src)).toBe(false);
   });
 });
+
+describe('SEC-WEAK-CRYPTO fix plan', () => {
+  it('is not agent-executable when every site is a correct CSPRNG fallback', () => {
+    const rule = ruleById('SEC-WEAK-CRYPTO')!;
+    const fallbackOnly = [{ ruleId: rule.id, file: 'src/a.ts', line: 1, excerpt: '', message: '', meta: { kind: 'prng', csprngFallback: true } }];
+    const plan = rule.fixPlan(fallbackOnly, repoCtx({}));
+    expect(plan.agentExecutable).toBe(false);
+    expect(plan.notAgentExecutableReason).toMatch(/fallback/);
+  });
+
+  it('is agent-executable for a genuinely broken primitive', () => {
+    const rule = ruleById('SEC-WEAK-CRYPTO')!;
+    const md5 = [{ ruleId: rule.id, file: 'src/a.ts', line: 1, excerpt: '', message: '', meta: { kind: 'hash' } }];
+    const plan = rule.fixPlan(md5, repoCtx({}));
+    expect(plan.agentExecutable).toBe(true);
+    expect(plan.agentPrompt).toBeTruthy();
+  });
+});
