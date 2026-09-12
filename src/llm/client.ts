@@ -39,14 +39,21 @@ export interface ProviderOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Where to look for an agent entrypoint, in order.
+ *
+ * Deliberately no machine-specific paths: `--bandit-cli` or
+ * `SENTINEL_BANDIT_CLI` is the supported way to point at a checkout, and a
+ * sibling-checkout guess is included because that is a layout anyone can verify
+ * by looking, rather than one baked in from whoever wrote this file.
+ */
 const BANDIT_CLI_CANDIDATES = (): string[] => {
   const out: string[] = [];
   if (process.env.SENTINEL_BANDIT_CLI) out.push(process.env.SENTINEL_BANDIT_CLI);
   const home = process.env.HOME ?? '';
-  out.push(
-    join(home, 'Documents/GitHub/bandit-agent-framework/apps/bandit-cli/dist/cli.js'),
-    join(home, '.bandit/bin/cli.js'),
-  );
+  if (home) out.push(join(home, '.bandit', 'bin', 'cli.js'));
+  const sibling = join('..', 'bandit-agent-framework', 'apps', 'bandit-cli', 'dist', 'cli.js');
+  out.push(join(process.cwd(), sibling), join(process.cwd(), '..', sibling));
   return out;
 };
 
