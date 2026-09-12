@@ -125,6 +125,82 @@ export function renderReport(ctx: ScanContext, findings: Finding[], profile: Pro
     out.push('');
   }
 
+  // ---- merge blockers ----------------------------------------------------
+  out.push('---');
+  out.push('');
+  out.push('# Merge blockers');
+  out.push('');
+  const blockers = live
+    .filter((f) => profile.gate.blockOn.includes(f.severity) || (f.severity === 'High' && f.status === 'confirmed'))
+    .sort(bySeverity);
+  if (blockers.length === 0) {
+    out.push('None. No finding at a blocking severity survived verification, and no high-severity finding was confirmed by an executed check.');
+    out.push('');
+    const unprovenHigh = live.filter((f) => f.severity === 'High' && f.status !== 'confirmed');
+    if (unprovenHigh.length > 0) {
+      out.push(`${unprovenHigh.length} high-severity finding(s) are reported as unproven (${unprovenHigh.map((f) => f.id).join(', ')}). Confirm them before treating them as blockers or as non-issues.`);
+      out.push('');
+    }
+  } else {
+    out.push('Each item below is either at the profile\'s blocking severity or a high-severity finding an executed check confirmed. The sub-items are the finding\'s own acceptance criteria, so "done" is testable rather than a matter of opinion.');
+    out.push('');
+    for (const f of blockers) {
+      out.push(`- [ ] **${f.id}** (${f.severity}, ${f.status}) — ${esc(f.title)}`);
+      for (const a of f.acceptanceCriteria) out.push(`  - [ ] ${esc(a)}`);
+    }
+    out.push('');
+  }
+
+  // ---- technical debt register -------------------------------------------
+  const debt = live.filter((f) => f.type === 'Tech Debt' || f.type === 'Quality' || f.type === 'Testing').sort(bySeverity);
+  if (debt.length > 0) {
+    out.push('# Technical debt register');
+    out.push('');
+    out.push('Not security findings. Carried here because they are the reason the next security fix takes longer than it should.');
+    out.push('');
+    out.push('| ID | Item | Severity | Effort | Verified | Scope |');
+    out.push('|---|---|---|---|---|---|');
+    for (const f of debt) {
+      out.push(
+        `| ${f.id} | ${esc(f.title)} | ${f.severity} | ${f.effortEstimate} | ${f.status} | ${esc(truncate(f.fixPlan.estimatedDiffSize, 60))} |`,
+      );
+    }
+    out.push('');
+  }
+
+  // ---- quality gates ----------------------------------------------------
+  out.push('# Recommended quality gates');
+  out.push('');
+  const gateNames = ['test', 'lint', 'typecheck', 'audit', 'sast', 'secrets'] as const;
+  const gateBlurb: Record<(typeof gateNames)[number], string> = {
+    test: 'the test suite, failing the build on a regression',
+    lint: 'lint as an error, not a warning — an unenforced standard is a preference',
+    typecheck: 'a type check, so `strict` in the config means something at merge time',
+    audit: 'a dependency audit failing on new high/critical advisories',
+    sast: 'static security analysis (this tool, CodeQL, or an equivalent) with SARIF upload',
+    secrets: 'secret scanning over history, not just the working tree',
+  };
+  const present = gateNames.filter((g) => ctx.ci.workflows.some((w) => w.gates[g]));
+  const missing = gateNames.filter((g) => !present.includes(g));
+  if (present.length > 0) out.push(`Already enforced on a PR-triggered workflow: ${present.join(', ')}.`);
+  if (missing.length === 0) {
+    out.push('');
+    out.push('Every gate this tool checks for is present. The remaining question is whether they are *required* in branch protection — a workflow that runs but is not required does not gate, and that setting lives in the repository settings rather than in the workflow file.');
+  } else {
+    out.push('');
+    out.push('Add, in this order — cheapest and highest-leverage first:');
+    out.push('');
+    for (const g of missing) out.push(`1. **${g}** — ${gateBlurb[g]}`);
+    out.push('');
+    out.push('Then mark them required in branch protection. A workflow that runs but is not required does not gate.');
+    out.push('');
+    out.push('```bash');
+    out.push('# this tool, as a scheduled + PR gate with SARIF upload');
+    out.push('sentinel init-workflow');
+    out.push('```');
+  }
+  out.push('');
+
   // ---- remediation roadmap ----------------------------------------------
   out.push('---');
   out.push('');

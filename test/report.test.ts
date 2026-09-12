@@ -453,3 +453,41 @@ describe('fix helpers', () => {
     expect(detectTestCommand('/definitely/not/a/repo')).toBeNull();
   });
 });
+
+describe('report sections that make it actionable', () => {
+  const profile = loadProfile('owasp-asvs');
+
+  it('lists merge blockers with the finding\'s own acceptance criteria as sub-items', () => {
+    const blocker = finding({ severity: 'Blocker', status: 'confirmed' });
+    const md = renderReport(ctx(), [blocker], profile, assessConfidence(ctx(), [blocker], profile));
+    expect(md).toContain('# Merge blockers');
+    expect(md).toContain('- [ ] **SEC-001**');
+    expect(md).toContain('  - [ ] no credential key in web storage');
+  });
+
+  it('says so plainly when there are no blockers, and names the unproven highs', () => {
+    const unproven = finding({
+      severity: 'High',
+      status: 'plausible',
+      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: 'x' },
+    });
+    const md = renderReport(ctx(), [unproven], profile, assessConfidence(ctx(), [unproven], profile));
+    expect(md).toMatch(/# Merge blockers\n\nNone\./);
+    expect(md).toContain('Confirm them before treating them as blockers');
+  });
+
+  it('keeps a debt register separate from security findings', () => {
+    const debtItem = finding({ id: 'TD-001', type: 'Tech Debt', severity: 'Low', title: 'Oversized modules', ruleId: 'QUA-FILE-SIZE' });
+    const md = renderReport(ctx(), [finding(), debtItem], profile, assessConfidence(ctx(), [finding(), debtItem], profile));
+    expect(md).toContain('# Technical debt register');
+    expect(md).toContain('TD-001');
+  });
+
+  it('recommends the missing gates in order and names the ones already present', () => {
+    const md = renderReport(ctx(), [finding()], profile, assessConfidence(ctx(), [finding()], profile));
+    expect(md).toContain('# Recommended quality gates');
+    expect(md).toContain('Already enforced on a PR-triggered workflow: test');
+    expect(md).toContain('**audit**');
+    expect(md).toContain('sentinel init-workflow');
+  });
+});
