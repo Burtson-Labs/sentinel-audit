@@ -1,0 +1,121 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  selfscan:
+    # Sentinel audits Sentinel. If the tool cannot survive its own gate, the
+    # claim it makes about other repositories is not worth much.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: verify
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Self-scan
+        id: scan
+        continue-on-error: true
+        run: |
+          node dist/cli.js scan . \
+            --profile owasp-asvs \
+            --out .sentinel \
+            --format md,html,json,sarif \
+            --no-llm
+
+      - name: Upload SARIF
+        if: always() && hashFiles('.sentinel/report.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .sentinel/report.sarif
+          category: sentinel-selfscan
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfscan-${{ github.run_id }}
+          path: .sentinel/
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f .sentinel/findings/index.json ]; then
+            node -e "
+              const d = require('./.sentinel/findings/index.json');
+              const out = ['## Sentinel self-scan', '', '| status | count |', '|---|---:|'];
+              for (const [k, v] of Object.entries(d.counts)) out.push('| ' + k + ' | ' + v + ' |');
+              console.log(out.join('\n'));
+            " >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Schema validation must be clean
+        run: |
+          # Sentinel validating its own output is the cheapest regression test for
+          # the semantic invariants; a violation here is a bug in Sentinel.
+          test ! -f .sentinel/SCHEMA-VALIDATION.md || { cat .sentinel/SCHEMA-VALIDATION.md; exit 1; }
+
+      - name: Enforce the gate
+        run: test "${{ steps.scan.outcome }}" = "success"
