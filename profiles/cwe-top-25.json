@@ -1,0 +1,119 @@
+{
+  "id": "cwe-top-25",
+  "title": "CWE Top 25 Most Dangerous Software Weaknesses",
+  "description": "Maps findings to CWE identifiers, preferring the Top 25 where applicable. Use when the downstream consumer is a vulnerability-management system keyed on CWE.",
+  "reference": "https://cwe.mitre.org/top25/",
+  "severityFloor": {
+    "Secret": "High"
+  },
+  "gate": {
+    "blockOn": ["Blocker"],
+    "conditionalOn": ["High"],
+    "note": "A finding mapping to a Top-25 weakness with a confirmed verification result is treated as release-blocking."
+  },
+  "controls": {
+    "SEC-XSS-DANGEROUS-HTML": [
+      { "id": "CWE-79", "title": "Improper Neutralization of Input During Web Page Generation (XSS)", "url": "https://cwe.mitre.org/data/definitions/79.html" }
+    ],
+    "SEC-MARKDOWN-HTML-SINK": [
+      { "id": "CWE-79", "title": "Improper Neutralization of Input During Web Page Generation (XSS)", "url": "https://cwe.mitre.org/data/definitions/79.html" },
+      { "id": "CWE-80", "title": "Improper Neutralization of Script-Related HTML Tags" }
+    ],
+    "SEC-TOKEN-WEBSTORAGE": [
+      { "id": "CWE-522", "title": "Insufficiently Protected Credentials", "url": "https://cwe.mitre.org/data/definitions/522.html" },
+      { "id": "CWE-1004", "title": "Sensitive Cookie Without HttpOnly Flag" }
+    ],
+    "SEC-JWT-CLIENT-TRUST": [
+      { "id": "CWE-345", "title": "Insufficient Verification of Data Authenticity" },
+      { "id": "CWE-807", "title": "Reliance on Untrusted Inputs in a Security Decision" }
+    ],
+    "SEC-CLIENT-SIDE-AUTHZ": [
+      { "id": "CWE-602", "title": "Client-Side Enforcement of Server-Side Security" },
+      { "id": "CWE-862", "title": "Missing Authorization", "url": "https://cwe.mitre.org/data/definitions/862.html" }
+    ],
+    "SEC-UNAUTH-HANDLER": [
+      { "id": "CWE-306", "title": "Missing Authentication for Critical Function", "url": "https://cwe.mitre.org/data/definitions/306.html" },
+      { "id": "CWE-862", "title": "Missing Authorization" }
+    ],
+    "SEC-CHILD-PROCESS-SHELL": [
+      { "id": "CWE-78", "title": "Improper Neutralization of Special Elements used in an OS Command", "url": "https://cwe.mitre.org/data/definitions/78.html" }
+    ],
+    "SEC-PATH-TRAVERSAL": [
+      { "id": "CWE-22", "title": "Improper Limitation of a Pathname to a Restricted Directory", "url": "https://cwe.mitre.org/data/definitions/22.html" }
+    ],
+    "SEC-SSRF-FETCH": [
+      { "id": "CWE-918", "title": "Server-Side Request Forgery (SSRF)", "url": "https://cwe.mitre.org/data/definitions/918.html" }
+    ],
+    "SEC-WEAK-CRYPTO": [
+      { "id": "CWE-327", "title": "Use of a Broken or Risky Cryptographic Algorithm" },
+      { "id": "CWE-338", "title": "Use of Cryptographically Weak PRNG" }
+    ],
+    "SEC-EVAL": [
+      { "id": "CWE-95", "title": "Improper Neutralization of Directives in Dynamically Evaluated Code" },
+      { "id": "CWE-94", "title": "Improper Control of Generation of Code", "url": "https://cwe.mitre.org/data/definitions/94.html" }
+    ],
+    "SEC-SECRET-IN-CLIENT-BUNDLE": [
+      { "id": "CWE-540", "title": "Inclusion of Sensitive Information in Source Code" },
+      { "id": "CWE-798", "title": "Use of Hard-coded Credentials", "url": "https://cwe.mitre.org/data/definitions/798.html" }
+    ],
+    "SEC-CSP-MISSING": [
+      { "id": "CWE-1021", "title": "Improper Restriction of Rendered UI Layers" },
+      { "id": "CWE-693", "title": "Protection Mechanism Failure" }
+    ],
+    "SEC-TLS-DISABLED": [
+      { "id": "CWE-295", "title": "Improper Certificate Validation" }
+    ],
+    "SEC-CORS-WILDCARD": [
+      { "id": "CWE-942", "title": "Permissive Cross-domain Policy with Untrusted Domains" }
+    ],
+    "SEC-POSTMESSAGE-ORIGIN": [
+      { "id": "CWE-346", "title": "Origin Validation Error" }
+    ],
+    "SEC-TARGET-BLANK": [
+      { "id": "CWE-1022", "title": "Use of Web Link to Untrusted Target with window.opener Access" }
+    ],
+    "SEC-SECRET-COMMITTED": [
+      { "id": "CWE-798", "title": "Use of Hard-coded Credentials", "url": "https://cwe.mitre.org/data/definitions/798.html" },
+      { "id": "CWE-312", "title": "Cleartext Storage of Sensitive Information" }
+    ],
+    "SEC-HTTP-ENDPOINT": [
+      { "id": "CWE-319", "title": "Cleartext Transmission of Sensitive Information" }
+    ],
+    "DEP-ADVISORY": [
+      { "id": "CWE-1395", "title": "Dependency on Vulnerable Third-Party Component", "url": "https://cwe.mitre.org/data/definitions/1395.html" },
+      { "id": "CWE-1104", "title": "Use of Unmaintained Third Party Components" }
+    ],
+    "DEP-LICENSE": [],
+    "DOCKER-ROOT": [
+      { "id": "CWE-250", "title": "Execution with Unnecessary Privileges" }
+    ],
+    "DOCKER-UNPINNED-BASE": [
+      { "id": "CWE-1357", "title": "Reliance on Insufficiently Trustworthy Component" }
+    ],
+    "DOCKER-SECRET-ARG": [
+      { "id": "CWE-532", "title": "Insertion of Sensitive Information into Log File" },
+      { "id": "CWE-798", "title": "Use of Hard-coded Credentials" }
+    ],
+    "CI-NO-SECURITY-GATE": [
+      { "id": "CWE-1395", "title": "Dependency on Vulnerable Third-Party Component" }
+    ],
+    "CI-UNPINNED-ACTION": [
+      { "id": "CWE-1357", "title": "Reliance on Insufficiently Trustworthy Component" },
+      { "id": "CWE-829", "title": "Inclusion of Functionality from Untrusted Control Sphere" }
+    ],
+    "CI-RISKY-TRIGGER": [
+      { "id": "CWE-913", "title": "Improper Control of Dynamically-Managed Code Resources" }
+    ],
+    "QUA-SWALLOWED-CATCH": [
+      { "id": "CWE-390", "title": "Detection of Error Condition Without Action" },
+      { "id": "CWE-778", "title": "Insufficient Logging" }
+    ],
+    "QUA-CONSOLE-LOGGING": [
+      { "id": "CWE-532", "title": "Insertion of Sensitive Information into Log File" }
+    ],
+    "QUA-ANY-DENSITY": [],
+    "QUA-FILE-SIZE": [],
+    "QUA-TEST-THINNESS": [],
+    "QUA-TODO-DENSITY": []
+  }
+}

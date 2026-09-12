@@ -1,0 +1,119 @@
+{
+  "id": "generic-enterprise",
+  "title": "Generic Enterprise Engineering Standards",
+  "description": "A vendor-neutral stand-in for an internal engineering standards catalogue: authentication, authorisation, secret handling, observability, dependency hygiene, quality gates. Fork this file and replace the control ids/titles with your own catalogue — that is the supported way to express house rules without hard-coding one company's private standard into the tool.",
+  "reference": "./docs/profiles.md",
+  "severityFloor": {
+    "Secret": "High",
+    "CI-CD": "Medium"
+  },
+  "gate": {
+    "blockOn": ["Blocker"],
+    "conditionalOn": ["High"],
+    "note": "Default enterprise posture: blockers stop the release, highs need a dated, owned exception."
+  },
+  "controls": {
+    "SEC-XSS-DANGEROUS-HTML": [
+      { "id": "ENG-SEC-OUTPUT-01", "title": "All rendered untrusted content is escaped or sanitised at the sink" }
+    ],
+    "SEC-MARKDOWN-HTML-SINK": [
+      { "id": "ENG-SEC-OUTPUT-01", "title": "All rendered untrusted content is escaped or sanitised at the sink" },
+      { "id": "ENG-SEC-OUTPUT-02", "title": "Markup generators used with raw-HTML sinks are allowlist based" }
+    ],
+    "SEC-TOKEN-WEBSTORAGE": [
+      { "id": "ENG-SEC-AUTH-04", "title": "Session material is held in storage unreadable by page script (HttpOnly cookie or in-memory)" }
+    ],
+    "SEC-JWT-CLIENT-TRUST": [
+      { "id": "ENG-SEC-AUTH-05", "title": "Token claims are only trusted after signature verification by a service" }
+    ],
+    "SEC-CLIENT-SIDE-AUTHZ": [
+      { "id": "ENG-SEC-AUTHZ-01", "title": "Authorisation is enforced server-side; the client may only hide UI" }
+    ],
+    "SEC-UNAUTH-HANDLER": [
+      { "id": "ENG-SEC-AUTH-01", "title": "Every network-exposed handler requires an authenticated principal" },
+      { "id": "ENG-SEC-AUTHZ-01", "title": "Authorisation is enforced server-side" }
+    ],
+    "SEC-CHILD-PROCESS-SHELL": [
+      { "id": "ENG-SEC-INPUT-03", "title": "Process execution uses argv arrays, never an interpolated shell string" }
+    ],
+    "SEC-PATH-TRAVERSAL": [
+      { "id": "ENG-SEC-INPUT-04", "title": "Filesystem access derived from request input is confined to a validated root" }
+    ],
+    "SEC-SSRF-FETCH": [
+      { "id": "ENG-SEC-EGRESS-01", "title": "Outbound requests to caller-influenced destinations use a destination allowlist" }
+    ],
+    "SEC-WEAK-CRYPTO": [
+      { "id": "ENG-SEC-CRYPTO-01", "title": "Only approved algorithms and CSPRNGs are used" }
+    ],
+    "SEC-EVAL": [
+      { "id": "ENG-SEC-INPUT-05", "title": "No dynamic code evaluation of runtime data" }
+    ],
+    "SEC-SECRET-IN-CLIENT-BUNDLE": [
+      { "id": "ENG-SEC-SECRET-02", "title": "No secret value reaches a client-distributed artefact" }
+    ],
+    "SEC-CSP-MISSING": [
+      { "id": "ENG-SEC-HEADERS-01", "title": "Web responses set CSP, HSTS, X-Content-Type-Options and frame-ancestors" }
+    ],
+    "SEC-TLS-DISABLED": [
+      { "id": "ENG-SEC-TRANSPORT-02", "title": "Certificate validation is never disabled outside local development" }
+    ],
+    "SEC-CORS-WILDCARD": [
+      { "id": "ENG-SEC-HEADERS-02", "title": "CORS origins are an explicit allowlist" }
+    ],
+    "SEC-POSTMESSAGE-ORIGIN": [
+      { "id": "ENG-SEC-HEADERS-03", "title": "Cross-frame messages validate origin on both ends" }
+    ],
+    "SEC-TARGET-BLANK": [
+      { "id": "ENG-SEC-HEADERS-04", "title": "External links drop referrer and opener" }
+    ],
+    "SEC-SECRET-COMMITTED": [
+      { "id": "ENG-SEC-SECRET-01", "title": "Secrets live in a managed secret store; source control holds none" }
+    ],
+    "SEC-HTTP-ENDPOINT": [
+      { "id": "ENG-SEC-TRANSPORT-01", "title": "All non-loopback traffic is TLS" }
+    ],
+    "DEP-ADVISORY": [
+      { "id": "ENG-SUP-DEP-01", "title": "No known high/critical advisory ships in a release" },
+      { "id": "ENG-SUP-DEP-02", "title": "Dependency updates are automated and reviewed" }
+    ],
+    "DEP-LICENSE": [
+      { "id": "ENG-SUP-LIC-01", "title": "Third-party licences are inventoried and compatible with distribution terms" }
+    ],
+    "DOCKER-ROOT": [
+      { "id": "ENG-OPS-CONT-01", "title": "Containers run as a non-root user" }
+    ],
+    "DOCKER-UNPINNED-BASE": [
+      { "id": "ENG-OPS-CONT-02", "title": "Base images are pinned by digest" }
+    ],
+    "DOCKER-SECRET-ARG": [
+      { "id": "ENG-SEC-SECRET-03", "title": "Build arguments carry no secret material" }
+    ],
+    "CI-NO-SECURITY-GATE": [
+      { "id": "ENG-QG-01", "title": "The PR gate runs tests, lint and dependency/secret scanning and fails the build" }
+    ],
+    "CI-UNPINNED-ACTION": [
+      { "id": "ENG-SUP-CI-01", "title": "Third-party CI actions are pinned to an immutable commit" }
+    ],
+    "CI-RISKY-TRIGGER": [
+      { "id": "ENG-SUP-CI-02", "title": "Workflows with write permissions never run untrusted fork code" }
+    ],
+    "QUA-SWALLOWED-CATCH": [
+      { "id": "ENG-QUA-ERR-01", "title": "Caught errors are logged or rethrown; never silently discarded" }
+    ],
+    "QUA-CONSOLE-LOGGING": [
+      { "id": "ENG-QUA-OBS-01", "title": "Structured logging through a single abstraction" }
+    ],
+    "QUA-ANY-DENSITY": [
+      { "id": "ENG-QUA-TYPE-01", "title": "Type escape hatches are rare, reviewed and justified" }
+    ],
+    "QUA-FILE-SIZE": [
+      { "id": "ENG-QUA-STRUCT-01", "title": "Modules stay within a reviewable size budget" }
+    ],
+    "QUA-TEST-THINNESS": [
+      { "id": "ENG-QG-02", "title": "Risk-weighted automated test coverage exists for every shipped surface" }
+    ],
+    "QUA-TODO-DENSITY": [
+      { "id": "ENG-QUA-DEBT-01", "title": "Deferred work is tracked in the issue tracker, not in comments" }
+    ]
+  }
+}

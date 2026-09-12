@@ -1,0 +1,121 @@
+{
+  "id": "owasp-asvs",
+  "title": "OWASP ASVS 4.0.3 (Level 2)",
+  "description": "Maps findings to OWASP Application Security Verification Standard requirements. Use when the audience expects a recognised application-security baseline.",
+  "reference": "https://owasp.org/www-project-application-security-verification-standard/",
+  "severityFloor": {
+    "Secret": "High"
+  },
+  "gate": {
+    "blockOn": ["Blocker"],
+    "conditionalOn": ["High"],
+    "note": "ASVS L2 treats unauthenticated access to privileged functionality and committed credentials as non-negotiable."
+  },
+  "controls": {
+    "SEC-XSS-DANGEROUS-HTML": [
+      { "id": "ASVS 5.3.3", "title": "Context-aware output escaping protects against reflected, stored and DOM XSS", "url": "https://owasp.org/www-project-application-security-verification-standard/" }
+    ],
+    "SEC-MARKDOWN-HTML-SINK": [
+      { "id": "ASVS 5.3.3", "title": "Context-aware output escaping protects against reflected, stored and DOM XSS" },
+      { "id": "ASVS 5.2.6", "title": "Untrusted markup is sanitised before rendering" }
+    ],
+    "SEC-TOKEN-WEBSTORAGE": [
+      { "id": "ASVS 3.4.1", "title": "Cookie-based session tokens use the Secure attribute", "url": "https://owasp.org/www-project-application-security-verification-standard/" },
+      { "id": "ASVS 8.2.1", "title": "Sensitive data is not stored in browser storage accessible to client script" }
+    ],
+    "SEC-JWT-CLIENT-TRUST": [
+      { "id": "ASVS 3.5.2", "title": "Stateless tokens are verified using a trusted signature" },
+      { "id": "ASVS 4.1.1", "title": "Access controls are enforced on a trusted service layer" }
+    ],
+    "SEC-CLIENT-SIDE-AUTHZ": [
+      { "id": "ASVS 4.1.1", "title": "Access controls are enforced on a trusted service layer" },
+      { "id": "ASVS 1.4.4", "title": "Access control decisions use a single verified mechanism" }
+    ],
+    "SEC-UNAUTH-HANDLER": [
+      { "id": "ASVS 4.1.1", "title": "Access controls are enforced on a trusted service layer" },
+      { "id": "ASVS 1.4.1", "title": "Trusted enforcement points cannot be bypassed" }
+    ],
+    "SEC-CHILD-PROCESS-SHELL": [
+      { "id": "ASVS 5.3.8", "title": "OS command injection is prevented by avoiding shell interpolation" }
+    ],
+    "SEC-PATH-TRAVERSAL": [
+      { "id": "ASVS 12.3.1", "title": "User-supplied filename metadata cannot traverse the filesystem" }
+    ],
+    "SEC-SSRF-FETCH": [
+      { "id": "ASVS 12.6.1", "title": "Server-side requests validate destinations against an allowlist" },
+      { "id": "ASVS 5.2.6", "title": "URL redirects and forwards validate untrusted data" }
+    ],
+    "SEC-WEAK-CRYPTO": [
+      { "id": "ASVS 6.2.2", "title": "Industry-proven cryptographic algorithms are used" },
+      { "id": "ASVS 6.3.1", "title": "Random values use a cryptographically secure generator" }
+    ],
+    "SEC-EVAL": [
+      { "id": "ASVS 5.2.4", "title": "Dynamic code execution features are avoided" }
+    ],
+    "SEC-SECRET-IN-CLIENT-BUNDLE": [
+      { "id": "ASVS 14.3.3", "title": "Build artefacts do not disclose secrets or sensitive configuration" },
+      { "id": "ASVS 2.10.4", "title": "Secrets are protected from unauthorised disclosure" }
+    ],
+    "SEC-CSP-MISSING": [
+      { "id": "ASVS 14.4.3", "title": "A Content-Security-Policy response header is set" },
+      { "id": "ASVS 14.4.5", "title": "Strict-Transport-Security is set" }
+    ],
+    "SEC-TLS-DISABLED": [
+      { "id": "ASVS 9.2.1", "title": "Connections use trusted TLS certificates" }
+    ],
+    "SEC-CORS-WILDCARD": [
+      { "id": "ASVS 14.5.3", "title": "Access-Control-Allow-Origin uses a verified allowlist" }
+    ],
+    "SEC-POSTMESSAGE-ORIGIN": [
+      { "id": "ASVS 14.4.7", "title": "Cross-document messaging validates the sender origin" }
+    ],
+    "SEC-TARGET-BLANK": [
+      { "id": "ASVS 14.4.1", "title": "Safe browsing context controls are applied" }
+    ],
+    "SEC-SECRET-COMMITTED": [
+      { "id": "ASVS 2.10.4", "title": "Secrets are stored in a protected secret store, not in source" },
+      { "id": "ASVS 14.2.1", "title": "All components are kept free of embedded credentials" }
+    ],
+    "SEC-HTTP-ENDPOINT": [
+      { "id": "ASVS 9.1.1", "title": "All client connectivity uses TLS" }
+    ],
+    "DEP-ADVISORY": [
+      { "id": "ASVS 14.2.1", "title": "All components are up to date with a documented vulnerability review" }
+    ],
+    "DEP-LICENSE": [
+      { "id": "ASVS 14.2.4", "title": "Third-party component inventory is maintained" }
+    ],
+    "DOCKER-ROOT": [
+      { "id": "ASVS 14.1.4", "title": "Application processes run with least privilege" }
+    ],
+    "DOCKER-UNPINNED-BASE": [
+      { "id": "ASVS 14.2.4", "title": "Component inventory and provenance are verifiable" }
+    ],
+    "DOCKER-SECRET-ARG": [
+      { "id": "ASVS 14.1.3", "title": "Build configuration does not embed secrets" }
+    ],
+    "CI-NO-SECURITY-GATE": [
+      { "id": "ASVS 14.2.1", "title": "Dependency vulnerability checks are part of the build" },
+      { "id": "ASVS 1.14.6", "title": "Build pipeline enforces security verification" }
+    ],
+    "CI-UNPINNED-ACTION": [
+      { "id": "ASVS 14.2.4", "title": "Build dependencies are pinned to verifiable versions" }
+    ],
+    "CI-RISKY-TRIGGER": [
+      { "id": "ASVS 1.14.6", "title": "Build pipeline protects privileged contexts from untrusted input" }
+    ],
+    "QUA-SWALLOWED-CATCH": [
+      { "id": "ASVS 7.1.1", "title": "Security-relevant events are logged" },
+      { "id": "ASVS 7.4.1", "title": "Errors are handled without failing open" }
+    ],
+    "QUA-CONSOLE-LOGGING": [
+      { "id": "ASVS 7.1.1", "title": "A common logging format is used across the application" }
+    ],
+    "QUA-ANY-DENSITY": [],
+    "QUA-FILE-SIZE": [],
+    "QUA-TEST-THINNESS": [
+      { "id": "ASVS 1.14.6", "title": "Verification activities include automated tests" }
+    ],
+    "QUA-TODO-DENSITY": []
+  }
+}
