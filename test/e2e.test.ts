@@ -272,3 +272,24 @@ describe('end-to-end scan of a synthetic repository', () => {
     rmSync(out3, { recursive: true, force: true });
   }, 120_000);
 });
+
+describe('artefacts do not republish the audited repository', () => {
+  it('scan-context.json carries no source text and stays small', () => {
+    const raw = readFileSync(join(out, 'scan-context.json'), 'utf8');
+    const doc = JSON.parse(raw) as Record<string, unknown>;
+    expect(doc.__texts, 'the in-memory source cache must never be serialised').toBeUndefined();
+    // a distinctive line from the fixture source must not appear anywhere
+    expect(raw).not.toContain('ESCAPES: Record<string, string>');
+    expect(raw).not.toContain('localStorage.setItem(TOKEN_KEY, token)');
+    expect(raw.length).toBeLessThan(200_000);
+    expect(doc.ruleHitCount).toBeTypeOf('number');
+  });
+
+  it('the report embeds only short excerpts, never whole files', () => {
+    const md = readFileSync(join(out, 'REPORT.md'), 'utf8');
+    // every excerpt the renderer emits is clamped; assert no long verbatim run
+    const longest = md.split('\n').reduce((n, l) => Math.max(n, l.length), 0);
+    expect(longest).toBeLessThan(4000);
+    expect(md).not.toContain('ESCAPES: Record<string, string>');
+  });
+});

@@ -195,7 +195,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
         2,
       )}\n`,
     );
-    write('scan-context.json', `${JSON.stringify({ ...ctx, hits: ctx.hits.length }, null, 2)}\n`);
+    write('scan-context.json', `${JSON.stringify(redactContext(ctx), null, 2)}\n`);
   }
   if (options.formats.includes('md')) {
     write('REPORT.md', renderReport(ctx, findings, profile, confidence));
@@ -230,6 +230,46 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
   const exitCode = confidence.gateDecision === 'block' ? 2 : blocking.length > 0 ? 1 : 0;
 
   return { ctx, profile, findings, confidence, validation, written, exitCode };
+}
+
+/**
+ * The machine-readable run record, with the things that do not belong in a
+ * distributable artefact removed.
+ *
+ * The verifiers are handed an in-memory cache of every source file so they can
+ * answer "does this policy exist anywhere" without a second pass. Serialising
+ * the context verbatim therefore embedded the audited repository's entire source
+ * in the output — a 3.8 MB artefact that quietly republishes a private codebase
+ * into whatever bucket the report is uploaded to. An audit artefact must carry
+ * findings and evidence, not a copy of the subject.
+ */
+function redactContext(ctx: ScanContext): Record<string, unknown> {
+  const { recon, deps, secrets, ci, docker, runs, llm, hits, ...rest } = ctx as ScanContext & Record<string, unknown>;
+  const omit = new Set(['__texts']);
+  const carried = Object.fromEntries(Object.entries(rest).filter(([k]) => !omit.has(k)));
+  return {
+    ...carried,
+    recon,
+    // The full dependency inventory belongs in an SBOM, not here; the summary
+    // is what a reader of the report needs.
+    deps: {
+      ...deps,
+      dependencies: `${deps.dependencies.length} package(s) inventoried — omitted from this artefact; see licenseSummary`,
+    },
+    // Candidates carry masked values only, but there is no reason to repeat
+    // every triaged-out match here when the report already lists them.
+    secrets: {
+      filesScanned: secrets.filesScanned,
+      externalScanner: secrets.externalScanner,
+      candidateCount: secrets.candidates.length,
+      suppressedCount: secrets.candidates.filter((c) => c.likelyFalsePositive).length,
+    },
+    ci,
+    docker,
+    runs,
+    llm,
+    ruleHitCount: hits.length,
+  };
 }
 
 function proposalsToFindings(
