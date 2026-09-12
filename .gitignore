@@ -1,0 +1,23 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# sentinel's own scan output
+.sentinel/
+sentinel-results/
+.sentinel-proofs/
+
+# agent runtime state, written by whichever coding agent drives the LLM pass
+.bandit/
+.claude/
+
+# editors / os
+.DS_Store
+.idea/
+*.swp
+
+# local env
+.env
+.env.local
+*.local.json
