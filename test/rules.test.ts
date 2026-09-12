@@ -2,8 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { maskSource } from '../src/util/lex.js';
 import { ALL_RULES, ruleById, isVendoredArtifact } from '../src/rules/index.js';
 import { classifyOperand, negativePredicateName, sameFieldComparison, wordTokens } from '../src/rules/crypto.js';
+import { declaresHeader, isEdgeConfigPath, SECURITY_HEADERS, surveyEdgeConfig } from '../src/util/edge.js';
 import type { RuleFileContext, RuleRepoContext } from '../src/rules/types.js';
 import type { RepoFile } from '../src/util/fsx.js';
+
+/** An ingress that sets the policy through a snippet annotation rather than a conf file. */
+const INGRESS_WITH_CSP_SNIPPET = [
+  'ingress:',
+  '  enabled: true',
+  '  annotations:',
+  '    nginx.ingress.kubernetes.io/configuration-snippet: |',
+  `      add_header Content-Security-Policy "default-src 'self'" always;`,
+  '',
+].join('\n');
 
 function fileCtx(path: string, src: string, isTest = false): RuleFileContext {
   const file: RepoFile = {
@@ -638,6 +649,123 @@ describe('aggregate rules', () => {
   it('SEC-CSP-MISSING does not fire for a non-web project', () => {
     expect(aggregate('SEC-CSP-MISSING', { 'src/index.ts': 'export const a = 1;\n' })).toHaveLength(0);
   });
+
+  it('SEC-CSP-MISSING stays silent when the policy is only in an ingress snippet annotation', () => {
+    const hits = aggregate('SEC-CSP-MISSING', {
+      'index.html': '<head><meta charset="utf-8"></head>\n',
+      'charts/app/values.yaml': INGRESS_WITH_CSP_SNIPPET,
+    });
+    expect(hits).toHaveLength(0);
+  });
+});
+
+/**
+ * Regression suite for the false positive that prompted util/edge.ts: HSTS
+ * reported absent for an application that sets it at the Kubernetes ingress.
+ */
+describe('security headers at the edge', () => {
+  const CHART_VALUES_WITH_HSTS = [
+    'ingress:',
+    '  enabled: true',
+    '  className: nginx',
+    '  annotations:',
+    '    kubernetes.io/ingress.class: nginx',
+    '    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"',
+    '    nginx.ingress.kubernetes.io/hsts: "true"',
+    '    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"',
+    '    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"',
+    '',
+  ].join('\n');
+
+  const hstsSpec = SECURITY_HEADERS.find((h) => h.name === 'Strict-Transport-Security')!;
+
+  it('sees HSTS configured only by ingress annotations', () => {
+    expect(declaresHeader(hstsSpec, CHART_VALUES_WITH_HSTS)).toBe(true);
+  });
+
+  it('sees HSTS configured only by a Traefik middleware', () => {
+    const middleware = ['kind: Middleware', 'spec:', '  headers:', '    stsSeconds: 31536000', '    stsIncludeSubdomains: true', ''].join('\n');
+    expect(declaresHeader(hstsSpec, middleware)).toBe(true);
+  });
+
+  it('still reports HSTS absent when nothing anywhere sets it', () => {
+    const values = ['ingress:', '  enabled: true', '  className: nginx', '  annotations:', '    kubernetes.io/ingress.class: nginx', ''].join('\n');
+    expect(declaresHeader(hstsSpec, values)).toBe(false);
+  });
+
+  it('treats a Helm chart values file as an edge surface', () => {
+    expect(isEdgeConfigPath('charts/web-frontend/values.yaml')).toBe(true);
+    expect(isEdgeConfigPath('charts/app/templates/ingress.yaml')).toBe(true);
+    expect(isEdgeConfigPath('k8s/ingress.yaml')).toBe(true);
+    expect(isEdgeConfigPath('nginx/security-headers.conf')).toBe(true);
+    expect(isEdgeConfigPath('src/components/Button.tsx')).toBe(false);
+  });
+
+  it('drops the whole finding when every header is set only at the ingress', () => {
+    const hits = aggregate('SEC-CSP-MISSING', {
+      'index.html': '<head><meta charset="utf-8"></head>\n',
+      'charts/app/values.yaml': `${CHART_VALUES_WITH_HSTS}\n`,
+      'nginx/security-headers.conf': "add_header Content-Security-Policy \"default-src 'self'\" always;\n",
+    });
+    expect(hits).toHaveLength(0);
+  });
+
+  it('names the edge surfaces it checked when the headers really are absent', () => {
+    const hits = aggregate('SEC-CSP-MISSING', {
+      'index.html': '<head><meta charset="utf-8"></head>\n',
+      'charts/app/values.yaml': 'ingress:\n  enabled: true\n  className: nginx\n',
+    });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.message).toMatch(/Strict-Transport-Security/);
+    expect(Number(hits[0]!.meta?.edgeSurfaces)).toBeGreaterThan(1);
+  });
+
+  it('reports an unresolvable edge surface instead of asserting absence', () => {
+    const survey = surveyEdgeConfig([
+      ['charts/app/templates/ingress.yaml', 'metadata:\n  annotations:\n    {{- toYaml .Values.ingress.annotations | nindent 4 }}\n'],
+    ]);
+    expect(survey.surfaces).toHaveLength(1);
+    expect(survey.unresolved).toHaveLength(1);
+    expect(survey.unresolved[0]).toMatch(/values file that is not in this repository/);
+  });
+
+  it('resolves the same template when the chart ships its values file', () => {
+    const survey = surveyEdgeConfig([
+      ['charts/app/templates/ingress.yaml', 'metadata:\n  annotations:\n    {{- toYaml .Values.ingress.annotations | nindent 4 }}\n'],
+      ['charts/app/values.yaml', CHART_VALUES_WITH_HSTS],
+    ]);
+    expect(survey.unresolved).toHaveLength(0);
+  });
+
+  it('does not care which order the chart files are walked in', () => {
+    const template: [string, string] = ['charts/app/templates/ingress.yaml', 'metadata:\n  annotations:\n    {{- toYaml .Values.ingress.annotations | nindent 4 }}\n'];
+    const values: [string, string] = ['charts/app/values.yaml', CHART_VALUES_WITH_HSTS];
+    expect(surveyEdgeConfig([template, values]).unresolved).toEqual(surveyEdgeConfig([values, template]).unresolved);
+  });
+
+  it('flags a Traefik middleware reference that is not defined here', () => {
+    const survey = surveyEdgeConfig([
+      ['k8s/ingress.yaml', 'metadata:\n  annotations:\n    traefik.ingress.kubernetes.io/router.middlewares: "prod-secure-headers@kubernetescrd"\n'],
+    ]);
+    expect(survey.unresolved).toHaveLength(1);
+    expect(survey.unresolved[0]).toMatch(/secure-headers/);
+  });
+
+  it('accepts a Traefik middleware reference that resolves in-repo', () => {
+    const survey = surveyEdgeConfig([
+      ['k8s/ingress.yaml', 'metadata:\n  annotations:\n    traefik.ingress.kubernetes.io/router.middlewares: "prod-secure-headers@kubernetescrd"\n'],
+      ['k8s/middleware.yaml', 'kind: Middleware\nmetadata:\n  name: secure-headers\nspec:\n  headers:\n    stsSeconds: 31536000\n'],
+    ]);
+    expect(survey.unresolved).toHaveLength(0);
+  });
+
+  it('flags a templated ingress snippet as uninspectable', () => {
+    const survey = surveyEdgeConfig([
+      ['charts/app/values.yaml', 'ingress:\n  annotations:\n    nginx.ingress.kubernetes.io/configuration-snippet: {{ .Values.snippet }}\n'],
+    ]);
+    expect(survey.unresolved.some((u) => /template expression/.test(u))).toBe(true);
+  });
+
   it('SEC-SOURCEMAP-PUBLISHED ignores a mode-gated setting', () => {
     const gated = aggregate('SEC-SOURCEMAP-PUBLISHED', { 'vite.config.ts': 'export default { build: { sourcemap: mode === "development" ? true : false } };\n' });
     expect(gated).toHaveLength(0);

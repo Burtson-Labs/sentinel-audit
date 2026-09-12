@@ -1,4 +1,5 @@
 import { excerpt } from '../util/fsx.js';
+import { declaresHeader, isEdgeConfigPath, isKubernetesEdgeConfig, SECURITY_HEADERS, surveyEdgeConfig } from '../util/edge.js';
 import type { RuleHit } from '../types.js';
 import { hit, type Rule } from './types.js';
 
@@ -6,6 +7,12 @@ import { hit, type Rule } from './types.js';
  * Web delivery rules: the headers and build settings that decide what an XSS
  * can do if one ever lands. These are deliberately aggregate — "this
  * application ships no CSP" is one finding, not one per HTML file.
+ *
+ * Header *absence* is checked against every surface that could set one,
+ * including Helm charts and ingress annotations (see util/edge.ts). A header set
+ * by `nginx.ingress.kubernetes.io/hsts` is set; a rule that only reads nginx
+ * confs and calls it missing is reporting its own blind spot as the
+ * application's defect.
  */
 
 const CSP_SOURCES = [
@@ -13,14 +20,7 @@ const CSP_SOURCES = [
   { re: /add_header\s+Content-Security-Policy/i, where: 'nginx add_header' },
   { re: /Content-Security-Policy\s*[:=]/i, where: 'header configuration' },
   { re: /contentSecurityPolicy/i, where: 'helmet/middleware configuration' },
-];
-
-const HEADER_CHECKS: Array<{ name: string; re: RegExp; why: string }> = [
-  { name: 'Content-Security-Policy', re: /Content-Security-Policy/i, why: 'decides whether an injected script can execute or exfiltrate' },
-  { name: 'Strict-Transport-Security', re: /Strict-Transport-Security/i, why: 'prevents a downgrade to plaintext on the next visit' },
-  { name: 'X-Content-Type-Options', re: /X-Content-Type-Options/i, why: 'stops MIME sniffing turning an upload into script' },
-  { name: 'Referrer-Policy', re: /Referrer-Policy/i, why: 'keeps URLs (and ids in them) out of third-party logs' },
-  { name: 'X-Frame-Options or frame-ancestors', re: /X-Frame-Options|frame-ancestors/i, why: 'prevents clickjacking of authenticated views' },
+  { re: /nginx\.ingress\.kubernetes\.io\/(?:configuration|server)-snippet[\s\S]{0,400}?Content-Security-Policy/i, where: 'ingress snippet annotation' },
 ];
 
 export const cspMissingRule: Rule = {
@@ -49,9 +49,10 @@ export const cspMissingRule: Rule = {
     if (htmlFiles.length === 0) return [];
     const entry = htmlFiles.find((p) => /(^|\/)index\.html?$/.test(p)) ?? htmlFiles[0]!;
 
-    const searchable = Array.from(ctx.texts.entries()).filter(
-      ([p]) => /\.html?$/.test(p) || /nginx|\.conf$|headers|vercel\.json|netlify\.toml|staticwebapp\.config\.json|_headers$/i.test(p) || /vite\.config|next\.config|server\.(t|j)s/i.test(p),
-    );
+    // Every surface that could set a header, not just the ones this rule used to
+    // know about. `charts/*/values.yaml` is where the header lives in a
+    // Kubernetes deployment, and it was the file this rule never opened.
+    const searchable = Array.from(ctx.texts.entries()).filter(([p]) => isEdgeConfigPath(p));
 
     const found: Array<{ where: string; path: string }> = [];
     for (const [path, text] of searchable) {
@@ -64,9 +65,10 @@ export const cspMissingRule: Rule = {
       return [];
     }
 
-    const missingHeaders = HEADER_CHECKS.filter(
-      (h) => !searchable.some(([, text]) => h.re.test(text)),
-    ).map((h) => h.name);
+    const missingHeaders = SECURITY_HEADERS.filter((h) => !searchable.some(([, text]) => declaresHeader(h, text))).map((h) => h.name);
+
+    const survey = surveyEdgeConfig(searchable);
+    const k8sEdge = searchable.filter(([, text]) => isKubernetesEdgeConfig(text)).map(([p]) => p);
 
     return [
       hit(
@@ -74,8 +76,19 @@ export const cspMissingRule: Rule = {
         entry,
         1,
         excerpt(ctx.texts.get(entry)?.split('\n').find((l) => /<head|<meta/i.test(l)) ?? '<head>'),
-        `no Content-Security-Policy found in the HTML entry document or in any server/edge configuration in the repository; also absent: ${missingHeaders.filter((n) => n !== 'Content-Security-Policy').join(', ') || 'none'}`,
-        { entry, missingHeaders: missingHeaders.join(','), htmlFiles: htmlFiles.length },
+        `no Content-Security-Policy found in the HTML entry document or in any of the ${searchable.length} server/edge configuration file(s) in the repository${
+          k8sEdge.length > 0 ? ` (including ${k8sEdge.length} Kubernetes/Helm edge manifest(s))` : ''
+        }; also absent: ${missingHeaders.filter((n) => n !== 'Content-Security-Policy').join(', ') || 'none'}${
+          survey.unresolved.length > 0 ? `. ${survey.unresolved.length} edge surface(s) could not be evaluated from this repository` : ''
+        }`,
+        {
+          entry,
+          missingHeaders: missingHeaders.join(','),
+          htmlFiles: htmlFiles.length,
+          edgeSurfaces: searchable.length,
+          k8sEdgeSurfaces: k8sEdge.length,
+          unresolvedEdge: survey.unresolved.slice(0, 3).join(' | '),
+        },
       ),
     ];
   },

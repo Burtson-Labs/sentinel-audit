@@ -5,6 +5,7 @@ import { run, git } from '../util/exec.js';
 import { satisfies } from '../util/semver.js';
 import { gateSatisfied } from '../collectors/ci.js';
 import { analyseDockerfile } from '../collectors/docker.js';
+import { surveyEdgeConfig } from '../util/edge.js';
 import { resolveInstalledVersions } from './installed.js';
 import type {
   AdvisoryRecord,
@@ -529,16 +530,44 @@ function verifyCspAbsence(input: VerifyInput): VerifyResult {
         : `0 of ${textCount} text files declare a policy${mentionsOnly.length > 0 ? `; ${mentionsOnly.length} file(s) mention the header name without declaring one: ${mentionsOnly.slice(0, 3).join(', ')}` : ''}`,
   });
 
+  // Edge configuration: the header is usually set at the ingress, not in the
+  // application. Enumerate the surfaces explicitly so the report can say which
+  // ones were read, and — more importantly — which ones could not be.
+  const survey = surveyEdgeConfig(repoTexts(ctx));
+  checks.push({
+    description: 'enumerated edge/ingress configuration surfaces that could set the header',
+    outcome: 'pass',
+    detail:
+      survey.surfaces.length > 0
+        ? `${survey.surfaces[0]}:1 — read ${survey.surfaces.length} edge surface(s): ${survey.surfaces.slice(0, 6).join(', ')}${survey.surfaces.length > 6 ? ` (+${survey.surfaces.length - 6} more)` : ''}`
+        : 'no edge/ingress configuration exists in this repository',
+  });
+  if (survey.unresolved.length > 0) {
+    checks.push({
+      description: 'edge configuration that exists but cannot be evaluated from this repository',
+      outcome: 'skip',
+      detail: survey.unresolved.slice(0, 4).join(' · '),
+    });
+  }
+
+  // An absence claim can only be `confirmed` when every surface that could carry
+  // the header was actually readable. With an unresolvable one in the tree the
+  // honest answer is `plausible` — the header may be set in the part we cannot
+  // see, and asserting otherwise is the failure this verifier exists to prevent.
+  const result = found ? 'refuted' : survey.unresolved.length > 0 ? 'plausible' : 'confirmed';
+
   return {
     verification: {
       method: 'static-assertion',
       claimType: 'factual',
       performed: true,
-      result: found ? 'refuted' : 'confirmed',
+      result,
       checks,
       notes: found
         ? 'a Content-Security-Policy directive was found in the repository, so the finding is refuted'
-        : 'no Content-Security-Policy directive exists anywhere in the repository. This confirms the repository ships none; it cannot rule out a policy injected by a CDN, ingress controller or reverse proxy configured outside this repository, which is recorded in COVERAGE.md.',
+        : survey.unresolved.length > 0
+          ? `no Content-Security-Policy directive was found in the ${survey.surfaces.length} edge/application surface(s) that could be read, but ${survey.unresolved.length} edge surface(s) could not be evaluated from this repository (${survey.unresolved.slice(0, 2).join('; ')}). The header may be set there, so this is reported as plausible rather than confirmed. Render the chart or read the live response headers to settle it.`
+          : `no Content-Security-Policy directive exists anywhere in the repository, including the ${survey.surfaces.length} edge/ingress surface(s) checked (Helm values, ingress annotations, proxy configuration). This confirms the repository ships none; it cannot rule out a policy injected by a CDN or a reverse proxy configured outside this repository, which is recorded in COVERAGE.md.`,
     },
     notes: [],
   };
