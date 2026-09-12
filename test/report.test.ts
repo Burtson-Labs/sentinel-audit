@@ -491,3 +491,18 @@ describe('report sections that make it actionable', () => {
     expect(md).toContain('sentinel init-workflow');
   });
 });
+
+describe('agent permission mode', () => {
+  it('defaults to read-only and only sentinel fix asks for write', async () => {
+    const { readFileSync } = await import('node:fs');
+    const client = readFileSync(new URL('../src/llm/client.ts', import.meta.url), 'utf8');
+    const fix = readFileSync(new URL('../src/fix/index.ts', import.meta.url), 'utf8');
+    const passes = readFileSync(new URL('../src/llm/passes.ts', import.meta.url), 'utf8');
+
+    // read-only is the fallthrough, so a new call site cannot get write access
+    // by forgetting to pass a mode.
+    expect(client).toMatch(/return \{ BANDIT_PERMISSION_MODE: 'plan'/);
+    expect(fix).toMatch(/mode: 'write'/);
+    expect(passes).not.toMatch(/mode: 'write'/);
+  });
+});

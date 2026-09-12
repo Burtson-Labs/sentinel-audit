@@ -193,7 +193,7 @@ async function applyOne(
 
   const prompt = buildAgentPrompt(f, testCommand);
   const started = Date.now();
-  const res = await provider.complete(prompt, { timeoutMs: 900_000 });
+  const res = await provider.complete(prompt, { timeoutMs: 900_000, mode: 'write', cwd: repo });
   const agentDurationMs = Date.now() - started;
   if (!res.ok) {
     cleanup(Boolean(options.keepFailed));

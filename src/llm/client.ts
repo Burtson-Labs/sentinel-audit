@@ -15,12 +15,32 @@ import { run, commandExists } from '../util/exec.js';
 
 export type ProviderKind = 'bandit-cli' | 'anthropic' | 'openai' | 'none';
 
+/**
+ * `mode` is load-bearing, not cosmetic.
+ *
+ * Review passes run `read-only`, so an analysis pass can never edit the
+ * repository it is describing. `sentinel fix` runs `write`, because its whole
+ * job is to change files — and that is safe only because the caller has already
+ * put it on a fresh branch in a clean tree with the repository's tests as the
+ * gate. Defaulting to read-only means a new call site cannot accidentally get
+ * write access.
+ */
+export type LlmMode = 'read-only' | 'write';
+
+export interface LlmCompleteOptions {
+  timeoutMs?: number;
+  maxTokens?: number;
+  mode?: LlmMode;
+  /** Directory the agent should treat as its working tree. */
+  cwd?: string;
+}
+
 export interface LlmProvider {
   kind: ProviderKind;
   label: string;
   available: boolean;
   note: string;
-  complete(prompt: string, opts?: { timeoutMs?: number; maxTokens?: number }): Promise<LlmResponse>;
+  complete(prompt: string, opts?: LlmCompleteOptions): Promise<LlmResponse>;
 }
 
 export interface LlmResponse {
@@ -99,14 +119,8 @@ function banditCliProvider(cliPath: string, options: ProviderOptions): LlmProvid
       const started = Date.now();
       const res = run(process.execPath, [cliPath, prompt], {
         timeoutMs: opts?.timeoutMs ?? options.timeoutMs ?? 300_000,
-        env: {
-          ...process.env,
-          NO_COLOR: '1',
-          BANDIT_INK_INPUT: '0',
-          // The review pass must never edit the repository under audit.
-          BANDIT_PERMISSION_MODE: 'plan',
-        },
-        cwd: process.cwd(),
+        env: { ...process.env, NO_COLOR: '1', BANDIT_INK_INPUT: '0', ...permissionEnv(opts?.mode) },
+        cwd: opts?.cwd ?? process.cwd(),
       });
       return {
         ok: res.stdout.trim().length > 0,
@@ -128,7 +142,8 @@ function banditBinaryProvider(options: ProviderOptions): LlmProvider {
       const started = Date.now();
       const res = run('bandit', [prompt], {
         timeoutMs: opts?.timeoutMs ?? options.timeoutMs ?? 300_000,
-        env: { ...process.env, NO_COLOR: '1', BANDIT_INK_INPUT: '0', BANDIT_PERMISSION_MODE: 'plan' },
+        env: { ...process.env, NO_COLOR: '1', BANDIT_INK_INPUT: '0', ...permissionEnv(opts?.mode) },
+        cwd: opts?.cwd ?? process.cwd(),
       });
       return {
         ok: res.stdout.trim().length > 0,
@@ -212,6 +227,20 @@ function openAiProvider(options: ProviderOptions): LlmProvider {
       }
     },
   };
+}
+
+/**
+ * Read-only is the default: a call site that forgets to ask for write access
+ * gets an agent that cannot modify anything.
+ */
+function permissionEnv(mode: LlmMode | undefined): NodeJS.ProcessEnv {
+  if (mode === 'write') {
+    // Non-interactive by necessity — `sentinel fix` has no terminal to prompt
+    // at. The containment is the fresh branch, the clean-tree precondition and
+    // the test gate, not an interactive confirmation.
+    return { BANDIT_PERMISSION_MODE: 'dangerous', BANDIT_DANGEROUSLY_APPROVE_ALL: '1' };
+  }
+  return { BANDIT_PERMISSION_MODE: 'plan', BANDIT_DANGEROUSLY_APPROVE_ALL: '' };
 }
 
 function stripAnsi(s: string): string {
