@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semver.
 
+## [Unreleased]
+
+### Cryptographic-usage rules
+
+- Four rules for the failures that break a signing or verification library, none of which are about an obsolete primitive:
+  - `SEC-TIMING-UNSAFE-COMPARE` — a signature, MAC, token, password or API key compared with `===`, `Buffer.compare` or `Buffer.equals`, which return on the first differing byte and leak the value one byte at a time.
+  - `SEC-CRYPTO-IV-REUSE` — an encryption nonce/IV that is fixed, zero-filled, clock-derived, or drawn once at module scope and reused on every call, plus ECB.
+  - `SEC-WEBCRYPTO-MISUSE` — SubtleCrypto called with a collision-broken digest, a private key marked extractable, a PBKDF2 cost below the modern floor, or a truncated AEAD tag.
+  - `SEC-SIGNATURE-VERIFY-DISCARDED` — a verification call used as a bare statement, a `catch` around one that returns success, a runtime switch that skips verification, or `none` accepted as an algorithm.
+- Each rule is discriminated rather than broadened: an unkeyed content hash is not a timing oracle and is not reported; `secret.id` and `password !== confirm` are not authentication decisions; `catch { return true }` inside `isTokenExpired()` fails closed; `importKey(…, true, ['verify'])` exports a public key and is fine. Measured at 14/14 on a defect fixture and 0 findings across 1,003 files of correct source.
+- Mapped in all three profiles (ASVS 6.2.x/2.4.1/3.5.2, CWE-208/323/329/328/347/252, and the generic enterprise catalogue).
+
+### Fixed
+
+- **Security headers configured at the edge are no longer reported as absent.** The header rules read only nginx configs, static-host files and bundler configs, so an application that sets HSTS through `nginx.ingress.kubernetes.io/hsts` in its Helm chart was told it had no HSTS. Header presence is now checked across Helm values and templates, Kubernetes ingress annotations, Traefik middleware (`stsSeconds`, `contentTypeNosniff`, `referrerPolicy`, `frameDeny`), ingress snippet annotations, and the previously covered surfaces.
+- **An absence claim is downgraded when a surface cannot be read.** A templated ingress snippet, annotations sourced from a values file that is not in the repository, an ingress fed from a ConfigMap, or a Traefik middleware reference that resolves nowhere in-tree now produce `plausible` with a "checked X, could not inspect Y" note, instead of `confirmed`.
+
 ## [0.1.0] — 2026-09-12
 
 First release.
