@@ -55,8 +55,9 @@ export async function runLlmPasses(
   provider: LlmProvider,
   ctx: ScanContext,
   findings: Finding[],
-  options: { maxReviewFiles?: number; texts: Map<string, string> },
+  options: { maxReviewFiles?: number; texts: Map<string, string>; timeoutMs?: number },
 ): Promise<LlmPassResult> {
+  const timeoutMs = options.timeoutMs ?? 300_000;
   const result: LlmPassResult = { triage: [], proposals: [], fixPlans: [], calls: 0, failures: 0, notes: [] };
   if (!provider.available) {
     result.notes.push(`model pass skipped: ${provider.note}`);
@@ -78,7 +79,7 @@ export async function runLlmPasses(
 
   if (triageable.length > 0) {
     const prompt = buildTriagePrompt(ctx, triageable);
-    const res = await provider.complete(prompt, { timeoutMs: 300_000 });
+    const res = await provider.complete(prompt, { timeoutMs });
     result.calls += 1;
     if (!res.ok) {
       result.failures += 1;
@@ -115,7 +116,7 @@ export async function runLlmPasses(
     const text = options.texts.get(file);
     if (!text) continue;
     const prompt = buildReviewPrompt(ctx, file, text.slice(0, 24_000));
-    const res = await provider.complete(prompt, { timeoutMs: 300_000 });
+    const res = await provider.complete(prompt, { timeoutMs });
     result.calls += 1;
     if (!res.ok) {
       result.failures += 1;
@@ -152,7 +153,7 @@ export async function runLlmPasses(
   const needPlans = findings.filter((f) => f.fixPlan.agentExecutable && !f.fixPlan.agentPrompt).slice(0, 8);
   if (needPlans.length > 0) {
     const prompt = buildFixPlanPrompt(ctx, needPlans);
-    const res = await provider.complete(prompt, { timeoutMs: 300_000 });
+    const res = await provider.complete(prompt, { timeoutMs });
     result.calls += 1;
     if (!res.ok) {
       result.failures += 1;

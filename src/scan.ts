@@ -39,6 +39,13 @@ export interface ScanOptions {
   banditCli?: string;
   /** How many files the model review pass may read. */
   maxReviewFiles?: number;
+  /**
+   * Per-call budget for the model pass. The wall-clock cost of a scan is
+   * dominated by this times the number of calls, and it varies by an order of
+   * magnitude between a hosted frontier model and a local one — so it is a flag
+   * rather than a constant.
+   */
+  llmTimeoutMs?: number;
   /** Print progress. */
   onProgress?: (msg: string) => void;
 }
@@ -115,6 +122,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
     const pass = await runLlmPasses(provider, ctx, findings, {
       maxReviewFiles: options.maxReviewFiles ?? 4,
       texts: rulesOut.repoContext.texts,
+      timeoutMs: options.llmTimeoutMs,
     });
     ctx.llm.calls = pass.calls;
     ctx.llm.failures = pass.failures;

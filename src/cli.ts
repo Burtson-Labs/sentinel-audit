@@ -33,6 +33,9 @@ SCAN OPTIONS
   --offline               skip anything needing network access (dependency advisories)
   --bandit-cli <path>     path to the Bandit CLI entrypoint used as the coding/review agent
   --max-review-files <n>  how many files the model review pass may read (default: 4)
+  --llm-timeout <ms>      per-call budget for the model pass (default: 300000). Scan wall
+                          time is dominated by this times the number of calls, and a local
+                          model can be an order of magnitude slower than a hosted one.
   --quiet                 only print the summary
 
   Exit code: 0 clean · 1 findings at or above the conditional threshold · 2 gate blocked.
@@ -152,6 +155,7 @@ async function runScan(args: Args): Promise<number> {
     offline: Boolean(args.flags.get('offline')),
     banditCli: args.flags.has('bandit-cli') ? String(args.flags.get('bandit-cli')) : undefined,
     maxReviewFiles: Number(args.flags.get('max-review-files') ?? 4),
+    llmTimeoutMs: args.flags.has('llm-timeout') ? Number(args.flags.get('llm-timeout')) : undefined,
     onProgress: quiet ? undefined : (m) => process.stderr.write(`  ${m}\n`),
   });
 
