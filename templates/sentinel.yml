@@ -1,0 +1,89 @@
+name: sentinel audit
+
+# Self-scan on a schedule and on pull requests, then upload SARIF so findings
+# appear in the repository's Security tab.
+#
+# Notes:
+#  - The scheduled run is what keeps dependency advisories current; the PR run
+#    is what stops new findings landing.
+#  - `--no-llm` keeps CI deterministic and offline-friendly. Drop it (and supply
+#    a provider key) if you want the model-assisted review pass in CI too.
+#  - Exit code 2 means the profile gate blocked. `continue-on-error` is set on
+#    the scan step only so the SARIF still uploads; the final step re-asserts the
+#    failure, so the check still fails. Removing that step turns the gate off.
+
+on:
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so secret scanning can see it
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install repository dependencies
+        run: npm ci --ignore-scripts || npm install --ignore-scripts
+        continue-on-error: true # a failed install only costs advisory/licence depth
+
+      - name: Run sentinel
+        id: sentinel
+        continue-on-error: true
+        run: |
+          npx --yes sentinel-audit scan . \
+            --profile owasp-asvs \
+            --out sentinel-results \
+            --format md,html,json,sarif \
+            --no-llm
+
+      - name: Upload SARIF to code scanning
+        if: always() && hashFiles('sentinel-results/report.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: sentinel-results/report.sarif
+          category: sentinel-audit
+
+      - name: Upload full artefact set
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-audit-${{ github.run_id }}
+          path: sentinel-results/
+          retention-days: 30
+
+      - name: Summarise
+        if: always()
+        run: |
+          if [ -f sentinel-results/findings/index.json ]; then
+            node -e "
+              const d = require('./sentinel-results/findings/index.json');
+              const c = d.counts;
+              console.log('## Sentinel audit');
+              console.log('');
+              console.log('| status | count |');
+              console.log('|---|---:|');
+              for (const [k, v] of Object.entries(c)) console.log('| ' + k + ' | ' + v + ' |');
+            " >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Enforce the gate
+        if: always()
+        run: |
+          # Re-assert the scan's exit status after the SARIF upload, so a blocked
+          # gate fails the check rather than being swallowed by continue-on-error.
+          test "${{ steps.sentinel.outcome }}" = "success"
