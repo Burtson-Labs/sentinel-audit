@@ -18,6 +18,8 @@ All notable changes to this project are documented here. Format loosely follows
 ### Fixed
 
 - **Security headers configured at the edge are no longer reported as absent.** The header rules read only nginx configs, static-host files and bundler configs, so an application that sets HSTS through `nginx.ingress.kubernetes.io/hsts` in its Helm chart was told it had no HSTS. Header presence is now checked across Helm values and templates, Kubernetes ingress annotations, Traefik middleware (`stsSeconds`, `contentTypeNosniff`, `referrerPolicy`, `frameDeny`), ingress snippet annotations, and the previously covered surfaces.
+- **`RegExp.prototype.exec` is no longer reported as shell execution.** `SEC-CHILD-PROCESS-SHELL` matched any `exec(`, so `FORBIDDEN_KEYWORDS.exec(sql)` in a SQL guard read as `child_process.exec`. A dotted call now only counts when the receiver is a child_process namespace, so `cp.exec(...)` still fires and `/re/.exec(s)` does not.
+- **A module constant is no longer mistaken for a client-inlined build variable.** `SEC-SECRET-IN-CLIENT-BUNDLE` matched the `PUBLIC_` prefix on any identifier, reporting `export const PUBLIC_KEY_FILE = 'audit-signing.pub'` in a Node CLI as a published credential. The rule now requires an actual build-variable read (`process.env` / `import.meta.env`) or a config/env file, and treats `_FILE`/`_DIR`/`_EXT` as locator suffixes.
 - **An absence claim is downgraded when a surface cannot be read.** A templated ingress snippet, annotations sourced from a values file that is not in the repository, an ingress fed from a ConfigMap, or a Traefik middleware reference that resolves nowhere in-tree now produce `plausible` with a "checked X, could not inspect Y" note, instead of `confirmed`.
 
 ## [0.1.0] — 2026-09-12

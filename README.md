@@ -404,7 +404,7 @@ Sentinel's own `COVERAGE.md` says this per run; here it is in general:
 ```bash
 pnpm install
 pnpm build          # tsc
-pnpm test           # 292 vitest tests incl. an end-to-end scan of a synthetic repo
+pnpm test           # 300 vitest tests incl. an end-to-end scan of a synthetic repo
 pnpm lint
 pnpm typecheck
 pnpm selfscan       # Sentinel audits Sentinel

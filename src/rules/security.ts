@@ -335,9 +335,25 @@ export const childProcessShellRule: Rule = {
   appliesTo: JS_TS,
   scan: (ctx) => {
     const hits: RuleHit[] = [];
-    const re = /\b(exec|execSync|spawn|spawnSync|execFile|execFileSync|fork)\s*\(/g;
+    // The boundary excludes `.` so a dotted call only matches through the
+    // receiver group below — otherwise `/re/.exec(s)` reads as a bare `exec(`.
+    const re = /(^|[^\w$.])((?:[\w$]+\s*\.\s*)?)(exec|execSync|spawn|spawnSync|execFile|execFileSync|fork)\s*\(/g;
+    // Namespaces that really are the child_process API, so `cp.exec(...)` still
+    // counts. Anything else with a receiver — `TAG.exec(sql)`,
+    // `/^\$[A-Za-z_]*\$/.exec(s)` — is RegExp.prototype.exec, and reporting it
+    // turns every SQL parser into a shell-injection finding.
+    const spawnNamespaces = new Set(
+      [...ctx.masked.codeAndStrings.matchAll(/import\s+(?:\*\s+as\s+)?([\w$]+)\s+from\s+['"`](?:node:)?(child_process|execa|cross-spawn|shelljs|zx)['"`]/g)].map((m) => m[1]!),
+    );
+    for (const m of ctx.masked.codeAndStrings.matchAll(/(?:const|let|var)\s+([\w$]+)\s*=\s*require\s*\(\s*['"`](?:node:)?(?:child_process|execa|cross-spawn|shelljs|zx)/g)) {
+      spawnNamespaces.add(m[1]!);
+    }
+    for (const n of ['cp', 'childProcess', 'child_process', 'proc', 'nodeChildProcess']) spawnNamespaces.add(n);
+
     for (const m of matchCode(ctx.src, ctx.masked, re)) {
-      const fn = m.match[1]!;
+      const receiver = (m.match[2] ?? '').replace(/[\s.]/g, '');
+      if (receiver !== '' && !spawnNamespaces.has(receiver)) continue;
+      const fn = m.match[3]!;
       const windowText = windowAfter(ctx.masked, m.index, 300);
       const srcWindow = ctx.src.slice(m.index, m.index + 300);
       const shellTrue = /shell\s*:\s*true/.test(windowText) || /shell\s*:\s*true/.test(srcWindow) || /shell\s*:\s*['"`]/.test(srcWindow);
@@ -766,9 +782,20 @@ export const secretInClientBundleRule: Rule = {
     const searchSpace = { ...ctx.masked, code: ctx.masked.codeAndStrings };
     for (const m of matchCode(ctx.src, searchSpace, re)) {
       const name = m.match[1]!;
+      // The whole premise is that a *build variable* gets string-substituted
+      // into the bundle. An ordinary module constant that happens to start with
+      // `PUBLIC_` is not one — `export const PUBLIC_KEY_FILE = 'audit.pub'` in a
+      // Node CLI is a filename, and reporting it as a published credential is
+      // the rule mistaking a prefix for a mechanism.
+      const region = ctx.src.slice(Math.max(0, m.index - 60), m.index + name.length + 4);
+      const isBuildVariable =
+        /(?:process\s*\.\s*env|import\s*\.\s*meta\s*\.\s*env|\benv\s*\.|\bdefine\s*:|^\s*$)/m.test(region) ||
+        /\.env/.test(ctx.file.path) ||
+        ['.env', '.yml', '.yaml', '.json', '.html', ''].includes(ctx.file.ext);
+      if (!isBuildVariable) continue;
       // `VITE_OIDC_TOKEN_URL` holds a URL. The credential word is qualified by a
       // locator suffix, so the variable names an endpoint, not a secret.
-      if (/_(?:URL|URI|ENDPOINT|PATH|HOST|ORIGIN|BASE|DOMAIN|ISSUER|AUDIENCE|SCOPE|SCOPES|NAME|TTL|EXPIRY|TIMEOUT|HEADER|PARAM|PREFIX|ENABLED|MODE)$/.test(name)) continue;
+      if (/_(?:URL|URI|ENDPOINT|PATH|HOST|ORIGIN|BASE|DOMAIN|ISSUER|AUDIENCE|SCOPE|SCOPES|NAME|TTL|EXPIRY|TIMEOUT|HEADER|PARAM|PREFIX|ENABLED|MODE|FILE|FILENAME|DIR|EXT)$/.test(name)) continue;
       // `*_PUBLIC_KEY` / publishable keys are designed to be shipped.
       const benign = /_(?:PUBLIC_KEY|PUBLISHABLE_KEY|CLIENT_ID|SITE_KEY|ANON_KEY)$/.test(name);
       hits.push(

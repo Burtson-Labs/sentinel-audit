@@ -153,12 +153,61 @@ describe('SEC-CHILD-PROCESS-SHELL', () => {
     expect(scan('SEC-CHILD-PROCESS-SHELL', 'src/a.ts', "execFile('git', ['status']);\n")).toHaveLength(0);
   });
 
+  it('does not mistake RegExp.prototype.exec for child_process.exec', () => {
+    const src = [
+      "import { exec } from 'node:child_process';",
+      'const TAG = /^\\$[A-Za-z_]*\\$/;',
+      'export function scanSql(sql: string) {',
+      '  const m = TAG.exec(sql);',
+      '  return FORBIDDEN.exec(sql) ?? m;',
+      '}',
+      '',
+    ].join('\n');
+    expect(scan('SEC-CHILD-PROCESS-SHELL', 'src/postgres.ts', src)).toHaveLength(0);
+  });
+
+  it('stays silent for a regex-literal receiver', () => {
+    const src = ['const FORBIDDEN = /DROP/i;', 'export const bad = (sql: string) => FORBIDDEN.exec(sql);', ''].join('\n');
+    expect(scan('SEC-CHILD-PROCESS-SHELL', 'src/postgres.ts', src)).toHaveLength(0);
+  });
+
+  it('still flags a namespace-imported child_process call', () => {
+    const src = ["import * as cp from 'node:child_process';", 'cp.exec(`git checkout ${branch}`);', ''].join('\n');
+    const hits = scan('SEC-CHILD-PROCESS-SHELL', 'src/a.ts', src);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.interpolated).toBe(true);
+  });
+
   it('downgrades severity when no call carries an influenced value', () => {
     const rule = ruleById('SEC-CHILD-PROCESS-SHELL')!;
     const constant = [{ ruleId: rule.id, file: 'a.ts', line: 1, excerpt: '', message: '', meta: { interpolated: false, shellTrue: false } }];
     const risky = [{ ruleId: rule.id, file: 'a.ts', line: 1, excerpt: '', message: '', meta: { interpolated: true } }];
     expect(rule.severityFor!(constant)).toBe('Low');
     expect(rule.severityFor!(risky)).toBe('High');
+  });
+});
+
+describe('SEC-SECRET-IN-CLIENT-BUNDLE', () => {
+  it('flags a credential in a client-inlined build variable', () => {
+    const hits = scan('SEC-SECRET-IN-CLIENT-BUNDLE', 'src/api.ts', 'const key = import.meta.env.VITE_STRIPE_SECRET_KEY;\n');
+    expect(hits).toHaveLength(1);
+  });
+
+  it('flags one declared in a .env file', () => {
+    expect(scan('SEC-SECRET-IN-CLIENT-BUNDLE', '.env.production', 'NEXT_PUBLIC_API_TOKEN=abc123\n')).toHaveLength(1);
+  });
+
+  it('does not treat a module constant that starts with PUBLIC_ as a build variable', () => {
+    const src = ["export const PRIVATE_KEY_FILE = 'audit-signing.key';", "export const PUBLIC_KEY_FILE = 'audit-signing.pub';", ''].join('\n');
+    expect(scan('SEC-SECRET-IN-CLIENT-BUNDLE', 'packages/runtime/src/keys.ts', src)).toHaveLength(0);
+  });
+
+  it('does not flag a re-export of such a constant', () => {
+    expect(scan('SEC-SECRET-IN-CLIENT-BUNDLE', 'packages/runtime/src/index.ts', 'export {\n  PRIVATE_KEY_FILE,\n  PUBLIC_KEY_FILE,\n} from "./keys.js";\n')).toHaveLength(0);
+  });
+
+  it('ignores a locator suffix', () => {
+    expect(scan('SEC-SECRET-IN-CLIENT-BUNDLE', 'src/a.ts', 'const u = import.meta.env.VITE_OIDC_TOKEN_URL;\n')).toHaveLength(0);
   });
 });
 
