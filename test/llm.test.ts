@@ -187,3 +187,17 @@ describe('dedupeProposals', () => {
     expect(dedupeProposals([mk('A', 'src/a.ts'), mk('B', 'src/a.ts'), mk('A', 'src/b.ts')])).toHaveLength(3);
   });
 });
+
+describe('providerFailureReason', () => {
+  it('distinguishes an unavailable provider from a bad answer', async () => {
+    const { providerFailureReason } = await import('../src/llm/client.js');
+    expect(providerFailureReason("fatal: The model took a moment to warm up and didn't answer in 120s", undefined)).toMatch(/didn't answer in 120s/);
+    expect(providerFailureReason('', 'HTTP 429 rate limit exceeded')).toMatch(/rate limit/i);
+    expect(providerFailureReason('Here is my analysis: the code looks fine.', undefined)).toBeNull();
+  });
+
+  it('treats an exhausted retry chain as unavailability', async () => {
+    const { providerFailureReason } = await import('../src/llm/client.js');
+    expect(providerFailureReason('warming up the model — retry 3 of 3 in 2s', undefined)).toBeTruthy();
+  });
+});

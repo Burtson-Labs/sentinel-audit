@@ -1,6 +1,6 @@
 import { join as joinPath } from 'node:path';
 import { excerpt, writeFileEnsured } from '../util/fsx.js';
-import { extractJson, type LlmProvider } from './client.js';
+import { extractJson, providerFailureReason, type LlmProvider } from './client.js';
 import type { Finding, ScanContext } from '../types.js';
 
 /**
@@ -109,8 +109,11 @@ export async function runLlmPasses(
       const parsed = extractJson<TriageDecision[]>(res.text);
       if (!Array.isArray(parsed)) {
         result.failures += 1;
+        const unavailable = providerFailureReason(res.text, res.error);
         result.notes.push(
-          `triage pass returned no parseable JSON — all deterministic findings were kept as-is. Response began: ${excerpt(res.text, 300)}`,
+          unavailable
+            ? `triage pass: the provider did not answer — ${unavailable}. All deterministic findings were kept as-is; this is an upstream availability problem, not a finding about the audited repository.`
+            : `triage pass returned no parseable JSON — all deterministic findings were kept as-is. Response began: ${excerpt(res.text, 300)}`,
         );
       } else {
         for (const d of parsed) {
@@ -150,7 +153,12 @@ export async function runLlmPasses(
     const parsed = extractJson<LlmProposal[]>(res.text);
     if (!Array.isArray(parsed)) {
       result.failures += 1;
-      result.notes.push(`deep review of ${file} returned no parseable JSON. Response began: ${excerpt(res.text, 300)}`);
+      const unavailable = providerFailureReason(res.text, res.error);
+      result.notes.push(
+        unavailable
+          ? `deep review of ${file}: the provider did not answer — ${unavailable}. Upstream availability, not a property of the file.`
+          : `deep review of ${file} returned no parseable JSON. Response began: ${excerpt(res.text, 300)}`,
+      );
       continue;
     }
     for (const p of parsed) {

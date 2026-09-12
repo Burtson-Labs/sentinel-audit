@@ -243,6 +243,28 @@ function permissionEnv(mode: LlmMode | undefined): NodeJS.ProcessEnv {
   return { BANDIT_PERMISSION_MODE: 'plan', BANDIT_DANGEROUSLY_APPROVE_ALL: '' };
 }
 
+/**
+ * Did the provider fail to answer, as opposed to answering badly?
+ *
+ * These two need different remedies — "retry in a minute" versus "fix the
+ * prompt" — so they must not both surface as "returned no parseable JSON". That
+ * message sent us looking for a parser bug when the model behind the agent was
+ * simply cold.
+ */
+const PROVIDER_UNAVAILABLE =
+  /\bfatal:|didn't answer in \d+s|did not answer in \d+s|warming up the model — retry 3 of 3|rate limit|429|503|502|ECONNREFUSED|ETIMEDOUT|context (?:length|window) exceeded|model not found/i;
+
+export function providerFailureReason(text: string, error: string | undefined): string | null {
+  const haystack = `${error ?? ''}\n${text}`;
+  const m = PROVIDER_UNAVAILABLE.exec(haystack);
+  if (!m) return null;
+  const line = haystack
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => PROVIDER_UNAVAILABLE.test(l));
+  return line ? line.slice(0, 300) : m[0];
+}
+
 function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
   return s.replace(/\[[0-9;]*[A-Za-z]/g, '');
