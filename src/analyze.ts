@@ -458,6 +458,47 @@ function candidatesFromSecrets(ctx: ScanContext): CandidateFinding[] {
     });
   }
 
+  // An external scanner's results are not re-derived, but they must not be
+  // reduced to a footnote either: a credential in git history is a rotation job
+  // whether or not this tool can enumerate it.
+  const external = ctx.secrets.externalScanner;
+  if (external.available && external.findings > 0) {
+    out.push({
+      ruleId: 'SEC-SECRET-HISTORY',
+      title: `${external.name} reported ${external.findings} secret finding(s), including git history`,
+      type: 'Secret',
+      severity: 'High',
+      area: 'Repository',
+      labels: ['security', 'secrets', 'git-history'],
+      evidence: `${external.name} run over the repository: ${external.note}`,
+      why:
+        'A credential that reached git history stays in every clone and every fork, and deleting the file does not remove it. Sentinel does not re-derive the individual results, so this finding exists to make sure the count is not mistaken for zero.',
+      recommendation: `Run \`${external.name}\` directly to list the results, rotate every value it names, and only then decide whether history rewriting is worth the disruption. Rotation is the part that actually closes the exposure.`,
+      acceptance: [
+        `${external.name} reports zero findings, or every remaining one is an accepted, documented false positive`,
+        'every value it named has been rotated and the old value is proven invalid',
+        'the scanner runs in CI and fails the build on a new finding',
+      ],
+      effort: 'M',
+      claimType: 'factual',
+      source: 'scanner',
+      hits: [
+        {
+          ruleId: 'SEC-SECRET-HISTORY',
+          file: '.git',
+          line: 1,
+          excerpt: `${external.findings} finding(s)`,
+          message: `${external.name} reported ${external.findings} finding(s)`,
+          meta: { scanner: external.name, findings: external.findings },
+        },
+      ],
+      locations: [{ file: '.git', startLine: 1 }],
+      notes: [
+        'Sentinel deliberately does not parse and re-present another scanner\'s results: it would add a translation layer that can be wrong about someone else\'s finding. The count is reported; the detail comes from the tool itself.',
+      ],
+    });
+  }
+
   if (suppressed.length > 0) {
     const byReason = new Map<string, number>();
     for (const c of suppressed) byReason.set(c.falsePositiveReason ?? 'unspecified', (byReason.get(c.falsePositiveReason ?? 'unspecified') ?? 0) + 1);

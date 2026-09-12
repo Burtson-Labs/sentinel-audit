@@ -76,6 +76,7 @@ export function verify(input: VerifyInput): VerifyResult {
     'CI-NO-SECURITY-GATE': verifyCiGate,
     'DEP-ADVISORY': verifyAdvisory,
     'DOCKER-ROOT': verifyDockerRoot,
+    'SEC-SECRET-HISTORY': verifyExternalScanner,
   };
   const handler = byRule[input.ruleId] ?? (input.ruleId.startsWith('DEP-ADVISORY') ? verifyAdvisory : undefined);
   if (handler) return handler(input);
@@ -646,6 +647,32 @@ function verifyDockerRoot(input: VerifyInput): VerifyResult {
           : 'every Dockerfile was re-parsed and the final stage sets a non-root user, so the claim is refuted',
     },
     severityHint: rootCount > 0 ? undefined : 'lower',
+    notes: [],
+  };
+}
+
+/**
+ * A third-party scanner's count is tool output, not something Sentinel checked.
+ * It is reported as `plausible` on purpose: presenting another tool's result as
+ * Sentinel-verified would be borrowing credibility we did not earn.
+ */
+function verifyExternalScanner(input: VerifyInput): VerifyResult {
+  const external = input.ctx.secrets.externalScanner;
+  return {
+    verification: {
+      method: 'tool-output',
+      claimType: 'factual',
+      performed: true,
+      result: 'plausible',
+      checks: [
+        {
+          description: `ran ${external.name} over the repository`,
+          outcome: 'pass',
+          detail: `${external.name}: ${external.note}`,
+        },
+      ],
+      notes: `The count comes from ${external.name}, which Sentinel executed but whose individual results it does not re-derive. Reported as plausible rather than confirmed: Sentinel verified that the scanner ran and what it returned, not that each result is a live credential. Run the scanner directly to triage them.`,
+    },
     notes: [],
   };
 }

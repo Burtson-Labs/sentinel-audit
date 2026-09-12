@@ -95,10 +95,7 @@ export function collectSecrets(
   const started = Date.now();
   const candidates: SecretCandidate[] = [];
   let filesScanned = 0;
-  const notExamined: string[] = [
-    'git history — only the working tree is scanned (use gitleaks/trufflehog with --since for history)',
-    'binary files and lockfiles',
-  ];
+  const notExamined: string[] = ['binary files and lockfiles'];
 
   for (const f of files) {
     if (f.binary) continue;
@@ -113,7 +110,17 @@ export function collectSecrets(
   }
 
   const external = probeExternalScanner(root, options.useExternalScanner ?? true);
-  if (!external.available) notExamined.push(`external secret scanner (${external.name}) not installed — regex+entropy only`);
+  // Only one of these two statements can be true, and the coverage report must
+  // not print both: either a history-aware scanner ran, or it did not.
+  if (external.available) {
+    notExamined.push(
+      `individual ${external.name} results are not re-derived as Sentinel findings — it reported ${external.findings}, and the tool should be run directly for the details`,
+    );
+  } else {
+    notExamined.push(
+      `git history — only the working tree was scanned. No history-aware scanner (${external.name}) was installed, so a credential that was committed and later deleted would not be found`,
+    );
+  }
 
   return {
     secrets: { candidates, filesScanned, externalScanner: external },

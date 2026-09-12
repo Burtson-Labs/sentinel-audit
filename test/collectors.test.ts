@@ -368,3 +368,28 @@ describe('entropy and masking', () => {
     expect(masked).not.toContain('defghij');
   });
 });
+
+describe('secret-scanning coverage statements are mutually exclusive', () => {
+  it('never claims git history is both covered and unexamined', async () => {
+    const { collectSecrets } = await import('../src/collectors/secrets.js');
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'sentinel-secrets-'));
+    writeFileSync(join(dir, 'a.ts'), 'export const a = 1;\n', 'utf8');
+    const files = [{ path: 'a.ts', absolute: join(dir, 'a.ts'), bytes: 20, ext: '.ts', binary: false }];
+
+    const out = collectSecrets(dir, files, { useExternalScanner: false });
+    const notes = out.run.notExamined.join(' ');
+    expect(out.secrets.externalScanner.available).toBe(false);
+    expect(notes).toMatch(/only the working tree was scanned/);
+
+    const withScanner = collectSecrets(dir, files, { useExternalScanner: true });
+    const n2 = withScanner.run.notExamined.join(' ');
+    if (withScanner.secrets.externalScanner.available) {
+      expect(n2).not.toMatch(/only the working tree was scanned/);
+      expect(n2).toMatch(/not re-derived as Sentinel findings/);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
