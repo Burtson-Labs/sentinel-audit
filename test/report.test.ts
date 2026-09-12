@@ -506,3 +506,23 @@ describe('agent permission mode', () => {
     expect(passes).not.toMatch(/mode: 'write'/);
   });
 });
+
+describe('fix commit hygiene', () => {
+  it('never stages agent runtime state or installed dependencies', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../src/fix/index.ts', import.meta.url), 'utf8');
+    for (const p of ['.bandit', '.claude', 'node_modules', '.sentinel']) {
+      expect(src, `${p} must be excluded from fix commits`).toContain(`'${p}'`);
+    }
+    // staging must go through the exclusion helper, not a bare `git add -A`
+    expect(src).toContain('stageFix(repo)');
+    expect(src).not.toMatch(/git\(repo, \['add', '-A'\]\)/);
+  });
+
+  it('forbids the agent from editing package.json or dependencies', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../src/fix/index.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/Do not modify CI configuration, lockfiles, version numbers, or package\.json/);
+    expect(src).toMatch(/Do not install or remove dependencies/);
+  });
+});

@@ -249,7 +249,8 @@ async function applyOne(
     }
   }
 
-  git(repo, ['add', '-A']);
+  stageFix(repo);
+  const unexpected = unexpectedChanges(changed, f);
   const commitMessage = [
     `fix(${f.id.toLowerCase()}): ${truncate(f.title, 68)}`,
     '',
@@ -260,6 +261,9 @@ async function applyOne(
     testPassed === null
       ? 'No test command was available, so this change is UNVERIFIED. Review carefully.'
       : `Verified by: ${testCommand}`,
+    ...(unexpected.length > 0
+      ? ['', `Outside the fix plan (review first): ${unexpected.join(', ')}`]
+      : []),
   ].join('\n');
   const commit = run('git', ['-C', repo, 'commit', '-m', commitMessage], { timeoutMs: 60_000 });
   if (!commit.ok) {
@@ -284,7 +288,7 @@ async function applyOne(
       title: f.title,
       branch,
       status: 'fixed',
-      detail: `committed on ${branch}${testPassed === null ? ' (unverified — no test command)' : ' with tests passing'}. Not pushed. Review with \`git diff ${baseBranch}..${branch}\`.`,
+      detail: `committed on ${branch}${testPassed === null ? ' (unverified — no test command)' : ' with tests passing'}. Not pushed. Review with \`git diff ${baseBranch}..${branch}\`.${unexpected.length > 0 ? ` Touched ${unexpected.length} file(s) the fix plan did not anticipate: ${unexpected.join(', ')} — review those first.` : ''}`,
       filesChanged: changed,
       testCommand,
       testPassed,
@@ -308,7 +312,7 @@ async function applyOne(
     };
   }
 
-  const body = prBody(f, testCommand, testPassed, changed);
+  const body = prBody(f, testCommand, testPassed, changed, unexpected);
   const pr = run(
     'gh',
     ['pr', 'create', '--repo', repoSlug(repo) ?? '', '--base', baseBranch, '--head', branch, '--title', `fix(${f.id.toLowerCase()}): ${truncate(f.title, 68)}`, '--body', body],
@@ -352,14 +356,21 @@ ${f.fixPlan.acceptanceTests.map((t) => `- ${t.path}: ${t.description}`).join('\n
 
 Hard constraints:
 - Change only what this fix requires. No reformatting, no renaming, no refactoring of unrelated code, no dependency additions unless the instruction names one.
-- Do not modify CI configuration, lockfiles, or version numbers.
+- Do not modify CI configuration, lockfiles, version numbers, or package.json in any way — including its scripts. If a command appears broken, leave it and say so instead.
+- Do not install or remove dependencies.
 - Do not create documentation or summary files.
 - Preserve the existing code style exactly.
 ${testCommand ? `- The change must pass \`${testCommand}\`. It will be run, and the fix is discarded if it fails.` : '- No test command is configured, so be conservative: prefer the smallest change that closes the finding.'}
 - If you conclude the fix cannot be made safely without a decision you do not have, make no changes and say so.`;
 }
 
-function prBody(f: Finding, testCommand: string | null, testPassed: boolean | null, changed: string[]): string {
+function prBody(
+  f: Finding,
+  testCommand: string | null,
+  testPassed: boolean | null,
+  changed: string[],
+  unexpected: string[],
+): string {
   return `## What
 
 Fixes **${f.id}** — ${f.title}
@@ -382,7 +393,8 @@ ${f.verification.proof ? `- **Proof:** \`${f.verification.proof.command}\` → \
 
 ## Files changed
 
-${changed.map((c) => `- \`${c}\``).join('\n')}
+${changed.map((c) => `- \`${c}\`${unexpected.includes(c) ? ' **(outside the fix plan — review first)**' : ''}`).join('\n')}
+${unexpected.length > 0 ? `\n> ${unexpected.length} file(s) were changed that the fix plan did not anticipate. That is sometimes legitimate (a new helper, a new test) and sometimes scope creep. Check these before the rest.\n` : ''}
 
 ## Acceptance criteria from the finding
 
@@ -457,13 +469,55 @@ function currentBranch(repo: string): string {
   return res.ok ? res.stdout.trim() : 'main';
 }
 
+/**
+ * Paths that must never end up in a fix commit.
+ *
+ * The agent writes its own session state into the working tree, and a
+ * repository without a .gitignore will happily let `git add -A` swallow
+ * node_modules too. A fix commit containing the agent's checkpoints is not a
+ * fix a human can review.
+ */
+const NEVER_COMMIT = ['.bandit', '.claude', '.cursor', 'node_modules', '.DS_Store', '.sentinel', 'sentinel-results'];
+
+function isExcludedFromCommit(path: string): boolean {
+  return NEVER_COMMIT.some((p) => path === p || path.startsWith(`${p}/`) || path.includes(`/${p}/`));
+}
+
 function changedFiles(repo: string): string[] {
   const res = git(repo, ['status', '--porcelain']);
   if (!res.ok) return [];
   return res.stdout
     .split('\n')
     .map((l) => l.slice(3).trim())
-    .filter((l) => l.length > 0);
+    .filter((l) => l.length > 0)
+    .filter((l) => !isExcludedFromCommit(l));
+}
+
+/** Stage everything except the excluded paths, using git pathspec magic. */
+function stageFix(repo: string): void {
+  git(repo, ['add', '-A', '--', '.', ...NEVER_COMMIT.map((p) => `:(exclude)${p}`), ...NEVER_COMMIT.map((p) => `:(exclude)**/${p}`)]);
+}
+
+/**
+ * Files the agent touched that the fix plan did not anticipate.
+ *
+ * Not an error — a fix legitimately needs a new helper or a new test — but it is
+ * the first thing a reviewer should look at, so it is stated rather than left to
+ * be noticed in the diff.
+ */
+function unexpectedChanges(changed: string[], f: Finding): string[] {
+  const expected = new Set<string>([
+    ...f.fixPlan.files.map((x) => x.path),
+    ...f.fixPlan.acceptanceTests.map((t) => t.path),
+    ...f.locations.map((l) => l.file),
+  ]);
+  return changed.filter((c) => {
+    if (expected.has(c)) return false;
+    // a new test alongside the fix is expected even if the plan named a
+    // different filename
+    if (/(^|\/)(test|tests|__tests__|spec)\//.test(c) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(c)) return false;
+    return true;
+  });
 }
 
 function repoSlug(repo: string): string | null {
