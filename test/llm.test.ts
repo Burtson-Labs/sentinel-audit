@@ -155,3 +155,35 @@ describe('applyLlmResults', () => {
     expect(f.fixPlan.agentExecutable).toBe(false);
   });
 });
+
+describe('dedupeProposals', () => {
+  it('collapses the same defect reported at several lines in one file', async () => {
+    const { dedupeProposals } = await import('../src/llm/passes.js');
+    const base = {
+      title: 'Unescaped interpolation',
+      severity: 'High' as const,
+      type: 'Security' as const,
+      file: 'src/links.js',
+      evidence: 'src/links.js:2 — interpolated',
+      whyThisMatters: 'x',
+      recommendation: 'y',
+      confidenceSelfReported: 'high',
+    };
+    const out = dedupeProposals([
+      { ...base, line: 2 },
+      { ...base, line: 6, evidence: 'src/links.js:6 — interpolated' },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.line).toBe(2);
+    expect(out[0]!.evidence).toMatch(/also at src\/links\.js:6/);
+  });
+
+  it('keeps genuinely different defects apart', async () => {
+    const { dedupeProposals } = await import('../src/llm/passes.js');
+    const mk = (title: string, file: string) => ({
+      title, severity: 'High' as const, type: 'Security' as const, file, line: 1,
+      evidence: `${file}:1 — x`, whyThisMatters: 'x', recommendation: 'y', confidenceSelfReported: 'high',
+    });
+    expect(dedupeProposals([mk('A', 'src/a.ts'), mk('B', 'src/a.ts'), mk('A', 'src/b.ts')])).toHaveLength(3);
+  });
+});

@@ -1,4 +1,5 @@
-import { excerpt } from '../util/fsx.js';
+import { join as joinPath } from 'node:path';
+import { excerpt, writeFileEnsured } from '../util/fsx.js';
 import { extractJson, type LlmProvider } from './client.js';
 import type { Finding, ScanContext } from '../types.js';
 
@@ -51,6 +52,25 @@ export interface LlmProposal {
 
 const EVIDENCE_CITATION = /[\w./-]+:\d+/;
 
+/**
+ * Optional prompt/response dump, enabled with SENTINEL_LLM_DEBUG=<dir>.
+ *
+ * A model pass that fails is almost always a prompt or a parsing problem, and
+ * "returned no parseable JSON" is not enough to tell which. Writing the exact
+ * exchange to disk turns a day of guessing into one `cat`.
+ */
+function dumpExchange(label: string, prompt: string, response: string): void {
+  const dir = process.env.SENTINEL_LLM_DEBUG;
+  if (!dir) return;
+  try {
+    const safe = label.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
+    writeFileEnsured(joinPath(dir, `${safe}.prompt.txt`), prompt);
+    writeFileEnsured(joinPath(dir, `${safe}.response.txt`), response);
+  } catch {
+    // a debug dump that cannot be written must never break the scan
+  }
+}
+
 export async function runLlmPasses(
   provider: LlmProvider,
   ctx: ScanContext,
@@ -81,6 +101,7 @@ export async function runLlmPasses(
     const prompt = buildTriagePrompt(ctx, triageable);
     const res = await provider.complete(prompt, { timeoutMs });
     result.calls += 1;
+    dumpExchange('triage', prompt, res.text || (res.error ?? ''));
     if (!res.ok) {
       result.failures += 1;
       result.notes.push(`triage pass failed: ${res.error ?? 'no output'} — all deterministic findings were kept as-is`);
@@ -88,7 +109,9 @@ export async function runLlmPasses(
       const parsed = extractJson<TriageDecision[]>(res.text);
       if (!Array.isArray(parsed)) {
         result.failures += 1;
-        result.notes.push('triage pass returned no parseable JSON — all deterministic findings were kept as-is');
+        result.notes.push(
+          `triage pass returned no parseable JSON — all deterministic findings were kept as-is. Response began: ${excerpt(res.text, 300)}`,
+        );
       } else {
         for (const d of parsed) {
           if (!d || typeof d.id !== 'string') continue;
@@ -118,6 +141,7 @@ export async function runLlmPasses(
     const prompt = buildReviewPrompt(ctx, file, text.slice(0, 24_000));
     const res = await provider.complete(prompt, { timeoutMs });
     result.calls += 1;
+    dumpExchange(`review-${file}`, prompt, res.text || (res.error ?? ''));
     if (!res.ok) {
       result.failures += 1;
       result.notes.push(`deep review of ${file} failed: ${res.error ?? 'no output'}`);
@@ -126,7 +150,7 @@ export async function runLlmPasses(
     const parsed = extractJson<LlmProposal[]>(res.text);
     if (!Array.isArray(parsed)) {
       result.failures += 1;
-      result.notes.push(`deep review of ${file} returned no parseable JSON`);
+      result.notes.push(`deep review of ${file} returned no parseable JSON. Response began: ${excerpt(res.text, 300)}`);
       continue;
     }
     for (const p of parsed) {
@@ -155,6 +179,7 @@ export async function runLlmPasses(
     const prompt = buildFixPlanPrompt(ctx, needPlans);
     const res = await provider.complete(prompt, { timeoutMs });
     result.calls += 1;
+    dumpExchange('fix-plans', prompt, res.text || (res.error ?? ''));
     if (!res.ok) {
       result.failures += 1;
       result.notes.push(`fix-plan pass failed: ${res.error ?? 'no output'} — the rule-authored plans were used instead`);
@@ -177,7 +202,42 @@ export async function runLlmPasses(
     }
   }
 
+  result.proposals = dedupeProposals(result.proposals);
   return result;
+}
+
+/**
+ * Collapse proposals that describe the same defect at several lines.
+ *
+ * A model asked to review a file will often report one problem once per
+ * occurrence. Three tickets for one fix is the same noise a scanner produces,
+ * so proposals with the same title in the same file become one finding whose
+ * evidence names every line.
+ */
+export function dedupeProposals(proposals: LlmProposal[]): LlmProposal[] {
+  const byKey = new Map<string, LlmProposal & { lines: number[] }>();
+  for (const p of proposals) {
+    const key = `${p.file}|${p.title.toLowerCase().replace(/\s+/g, ' ').trim()}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...p, lines: [p.line] });
+      continue;
+    }
+    if (!existing.lines.includes(p.line)) existing.lines.push(p.line);
+  }
+  return Array.from(byKey.values()).map((p) => {
+    if (p.lines.length <= 1) {
+      const { lines: _lines, ...rest } = p;
+      return rest;
+    }
+    const sorted = [...p.lines].sort((a, b) => a - b);
+    const { lines: _lines, ...rest } = p;
+    return {
+      ...rest,
+      line: sorted[0]!,
+      evidence: `${p.evidence} (also at ${sorted.slice(1).map((l) => `${p.file}:${l}`).join(', ')})`,
+    };
+  });
 }
 
 function pickReviewFiles(ctx: ScanContext, findings: Finding[], max: number): string[] {
@@ -216,6 +276,23 @@ function normaliseType(t: unknown): Finding['type'] {
 // prompts
 // ---------------------------------------------------------------------------
 
+/**
+ * Every analysis prompt opens with this.
+ *
+ * The provider may be a *coding agent*, not a completion endpoint — give it a
+ * question and it will start listing files and reading source to answer it
+ * properly. That is the right instinct for a coding task and exactly wrong
+ * here: the prompt already carries everything needed, the exploration burns the
+ * per-call budget, and the call gets killed mid-loop before the answer is
+ * emitted. The symptom is "returned no parseable JSON" on every pass, which
+ * looks like a parsing bug and is not one.
+ */
+const NO_TOOLS_PREAMBLE = [
+  'Answer using only the information in this message.',
+  'Do not read files, do not list directories, do not run commands, do not use any tool.',
+  'Do not ask questions. Produce the requested output directly as your first and only action.',
+].join(' ');
+
 function repoSummary(ctx: ScanContext): string {
   return [
     `Repository: ${ctx.recon.repoUrl} @ ${ctx.recon.commitSha.slice(0, 12)} (${ctx.recon.branch})`,
@@ -225,7 +302,9 @@ function repoSummary(ctx: ScanContext): string {
 }
 
 function buildTriagePrompt(ctx: ScanContext, items: Array<{ id: string; title: string; severity: string; status: string; evidence: string; locations: string[] }>): string {
-  return `You are triaging the output of a static security scanner. Your job is to remove noise, not to be agreeable.
+  return `${NO_TOOLS_PREAMBLE}
+
+You are triaging the output of a static security scanner. Your job is to remove noise, not to be agreeable.
 
 ${repoSummary(ctx)}
 
@@ -243,7 +322,9 @@ Reply with ONLY a JSON array, no prose:
 }
 
 function buildReviewPrompt(ctx: ScanContext, file: string, content: string): string {
-  return `You are reviewing one file from a repository for security and correctness defects that a regex-based scanner cannot see: cross-module data flow, logic errors, missing authorisation, unsafe defaults, race conditions, and error handling that fails open.
+  return `${NO_TOOLS_PREAMBLE} The complete file contents are included below — there is nothing to look up.
+
+You are reviewing one file from a repository for security and correctness defects that a regex-based scanner cannot see: cross-module data flow, logic errors, missing authorisation, unsafe defaults, race conditions, and error handling that fails open.
 
 ${repoSummary(ctx)}
 
@@ -265,7 +346,9 @@ Reply with ONLY a JSON array, no prose:
 }
 
 function buildFixPlanPrompt(ctx: ScanContext, findings: Finding[]): string {
-  return `You are writing instructions for a coding agent that will implement each fix on its own branch, run the repository's test suite, and open a pull request for a human to review.
+  return `${NO_TOOLS_PREAMBLE}
+
+You are writing instructions for a coding agent that will implement each fix on its own branch, run the repository's test suite, and open a pull request for a human to review.
 
 ${repoSummary(ctx)}
 Test command: ${ctx.recon.scripts.test ? `\`${ctx.recon.scripts.test}\`` : 'none detected'}

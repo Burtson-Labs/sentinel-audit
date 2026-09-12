@@ -106,6 +106,7 @@ sentinel init-workflow           # write .github/workflows/sentinel.yml
 --offline               skip anything needing the network (dependency advisories)
 --bandit-cli <path>     path to the coding/review agent entrypoint
 --max-review-files <n>  how many files the model review pass may read (default 4)
+--llm-timeout <ms>      per-call budget for the model pass (default 300000)
 --quiet
 ```
 
@@ -133,6 +134,8 @@ Uses the [Bandit CLI](https://github.com/Burtson-Labs/bandit-agent-framework) if
 3. **Fix-plan authoring** — turns recommendations into instructions an agent can execute.
 
 With no provider reachable, the scan completes and every artefact says the model pass did not run, with the coverage cost spelled out. The one failure mode a security report must not have is quietly producing less while looking the same.
+
+**Wall-clock note:** the deterministic half of a scan takes seconds; the model pass takes minutes per call and dominates the total. Budget it with `--llm-timeout` and `--max-review-files`, or run `--no-llm` in CI and the full pass on a schedule.
 
 ---
 
@@ -257,7 +260,7 @@ Sentinel's own `COVERAGE.md` says this per run; here it is in general:
 ```bash
 pnpm install
 pnpm build          # tsc
-pnpm test           # 199 vitest tests incl. an end-to-end scan of a synthetic repo
+pnpm test           # 225 vitest tests incl. an end-to-end scan of a synthetic repo
 pnpm lint
 pnpm selfscan       # Sentinel audits Sentinel
 ```

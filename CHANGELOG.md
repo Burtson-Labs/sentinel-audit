@@ -48,4 +48,4 @@ First release.
 ### Engineering
 
 - Zero runtime dependencies. In-tree YAML subset reader, semver comparator, lexical masker, argument parser and schema validator.
-- 199 tests, including an end-to-end scan of a synthetic repository that asserts a known non-defect is *refuted* by a real executed proof.
+- 225 tests, including an end-to-end scan of a synthetic repository that asserts a known non-defect is *refuted* by a real executed proof.

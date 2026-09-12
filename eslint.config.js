@@ -11,7 +11,12 @@ export default tseslint.config(
       // boundaries (JSON from `npm audit`, etc.) is intentional and narrowed
       // immediately afterwards. Everything else must be typed.
       '@typescript-eslint/no-explicit-any': 'error',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // `^_` also covers destructuring used to omit a property, which is the
+      // cleanest way to drop a field from an object without mutating it.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
       'no-empty': ['error', { allowEmptyCatch: false }],
       eqeqeq: ['error', 'smart'],
     },
