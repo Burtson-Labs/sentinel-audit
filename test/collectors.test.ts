@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseAuditJson, copyleftDependencies } from '../src/collectors/dependencies.js';
-import { scanText, triageCandidate, SECRET_RULES } from '../src/collectors/secrets.js';
+import { scanText, triageCandidate, documentationLoopbackHost, SECRET_RULES } from '../src/collectors/secrets.js';
 import { summariseWorkflow, gateSatisfied } from '../src/collectors/ci.js';
 import { analyseDockerfile } from '../src/collectors/docker.js';
 import { parseYaml, tryParseYaml } from '../src/util/yaml.js';
@@ -170,6 +170,62 @@ describe('triageCandidate', () => {
 
   it('keeps a high-entropy random value', () => {
     expect(triageCandidate({ ...base, value: 'xQ4$vB9#mL2@pR7!kT5%' }).suppress).toBe(false);
+  });
+});
+
+/**
+ * Regression suite for a High finding whose entire content was a README line
+ * telling the reader how to point the tool at their own database. The
+ * connection-string rule is `precise`, so every `!rule.precise` suppression was
+ * skipped and the loopback host nobody could reach was reported as a leak.
+ */
+describe('documented loopback connection strings', () => {
+  const run = (path: string, text: string): SecretCandidate[] => {
+    const out: SecretCandidate[] = [];
+    scanText(path, text, out);
+    return out;
+  };
+  const README_LINE = 'export DATABASE_URL=postgres://readonly_user:secret@localhost:5432/appdb\n';
+
+  it('dismisses a loopback connection string in a README', () => {
+    const hits = run('examples/postgres-report/README.md', README_LINE);
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.likelyFalsePositive)).toBe(true);
+    expect(hits[0]!.falsePositiveReason).toMatch(/documentation example pointing at a loopback host/);
+  });
+
+  it('dismisses the other loopback and reserved spellings in documentation', () => {
+    for (const url of [
+      'mongodb://admin:pw1234@127.0.0.1:27017/db',
+      'redis://default:pw1234@redis.local:6379',
+      'postgres://u:pw1234@db.internal:5432/app',
+      'https://user:pw1234@example.com/api',
+      'amqps://guest:guest123@host.docker.internal:5672',
+    ]) {
+      const hits = run('docs/setup.md', `${url}\n`);
+      expect(hits.length, url).toBeGreaterThan(0);
+      expect(hits.every((h) => h.likelyFalsePositive), url).toBe(true);
+    }
+  });
+
+  it('keeps a loopback credential in real source or configuration', () => {
+    const inSource = run('src/db.ts', `const url = 'postgres://readonly_user:secret@localhost:5432/appdb';\n`);
+    expect(inSource.some((h) => !h.likelyFalsePositive)).toBe(true);
+    const inConfig = run('config/database.yml', `url: postgres://readonly_user:secret@localhost:5432/appdb\n`);
+    expect(inConfig.some((h) => !h.likelyFalsePositive)).toBe(true);
+  });
+
+  it('keeps a routable connection string even in documentation', () => {
+    const hits = run('docs/runbook.md', 'export DATABASE_URL=postgres://svc_reports:Hx7tQ2pL9sF4@db.production.io:5432/appdb\n');
+    expect(hits.some((h) => !h.likelyFalsePositive)).toBe(true);
+  });
+
+  it('recognises the host only when the URL carries a credential', () => {
+    expect(documentationLoopbackHost('postgres://user:pw@localhost:5432/db', 'README.md')).toBe('localhost');
+    expect(documentationLoopbackHost('postgres://localhost:5432/db', 'README.md')).toBeUndefined();
+    expect(documentationLoopbackHost('postgres://user:pw@db.production.io/db', 'README.md')).toBeUndefined();
+    expect(documentationLoopbackHost('postgres://user:pw@localhost:5432/db', 'src/db.ts')).toBeUndefined();
+    expect(documentationLoopbackHost('redis://user:pw@[::1]:6379', 'docs/a.md')).toBe('[::1]');
   });
 });
 

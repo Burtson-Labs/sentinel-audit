@@ -3,6 +3,7 @@ import { readTextSafe, type RepoFile } from '../util/fsx.js';
 import { maskSecret, shannonEntropy } from '../util/hash.js';
 import { maskSource } from '../util/lex.js';
 import { commandExists, run } from '../util/exec.js';
+import { credentialUrlHost, isLoopbackOrReserved } from '../util/hosts.js';
 import { isTestOrFixturePath } from '../util/testpaths.js';
 import type { CollectorRun, ExternalScannerHit, SecretCandidate, SecretResult } from '../types.js';
 
@@ -368,6 +369,27 @@ export function credentialPart(value: string): string {
   return url?.[1] ?? value;
 }
 
+/**
+ * Paths whose content is prose or a worked example: documentation, READMEs,
+ * example/sample trees, and the `.env.example` family.
+ *
+ * Source and configuration are deliberately excluded — a loopback credential in
+ * `src/db.ts` or `config/database.yml` is a real committed credential that
+ * happens to point at a development host, and those are the ones that get copied
+ * into a deployment.
+ */
+function isProseOrExamplePath(path: string): boolean {
+  return PROSE_FILE.test(path) || SAFE_PATH.test(path) || DOC_SAMPLE_PATH.test(path) || /\.example$|\.sample$|\.template$/.test(path);
+}
+
+/** The loopback/reserved host of a documented connection string, if that is what this is. */
+export function documentationLoopbackHost(value: string, path: string): string | undefined {
+  if (!isProseOrExamplePath(path)) return undefined;
+  const host = credentialUrlHost(value);
+  if (host === undefined || !isLoopbackOrReserved(host)) return undefined;
+  return host;
+}
+
 export function triageCandidate(input: TriageInput): { suppress: boolean; reason: string } {
   const { rule, value, lineText, entropy, isExample, isFixture, isDocPath, path, assignedTo, context } = input;
   const credential = credentialPart(value);
@@ -404,6 +426,25 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
     return {
       suppress: true,
       reason: `the line carries an explicit scanner allow annotation (${ALLOW_ANNOTATION.exec(lineText)![0]}). Honoured because it is committed and reviewable — published here rather than applied silently, so you can disagree with the author`,
+    };
+  }
+  // A connection string aimed at a loopback host, in a document, is an
+  // instruction: "export DATABASE_URL=postgres://readonly_user:secret@localhost
+  // :5432/appdb" is how a README tells a reader to point the tool at their own
+  // database. There is no credential to rotate, because the credential is the
+  // reader's to invent.
+  //
+  // This branch deliberately runs for `precise` rules. The connection-string and
+  // basic-auth-url patterns are precise, so every `!rule.precise` suppression
+  // below skipped them, and a documentation example stayed at High no matter how
+  // obviously it was documentation. The narrowing is the *host*: a loopback or
+  // RFC-2606 reserved name cannot be reached from anywhere else, which is what
+  // makes this safe to dismiss while the same line with a routable host is not.
+  const docHost = documentationLoopbackHost(value, path);
+  if (docHost !== undefined) {
+    return {
+      suppress: true,
+      reason: `documentation example pointing at a loopback host (${docHost}) — ${path} is prose/example text, and a credential for ${docHost} is not reachable from anywhere else, so there is nothing to rotate. The same connection string with a routable host is still reported`,
     };
   }
   if (PROSE_FILE.test(path) && !rule.precise && DOC_PLACEHOLDER.test(value)) {

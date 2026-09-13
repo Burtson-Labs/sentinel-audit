@@ -1,5 +1,6 @@
 import { matchCode, windowAfter } from '../util/lex.js';
 import { excerpt } from '../util/fsx.js';
+import { LOOPBACK_OR_RESERVED as LOOPBACK_OR_RESERVED_HOST } from '../util/hosts.js';
 import { publishableKeyMatch } from '../collectors/secrets.js';
 import type { RuleHit } from '../types.js';
 import { hit, JS_TS, type Rule, type RuleFileContext } from './types.js';
@@ -31,9 +32,14 @@ const PUBLISHABLE_PROVIDER =
 const TOKEN_KEY =
   /(token|jwt|secret|password|passwd|credential|apikey|api[_-]key|session|bearer|refresh|id[_-]?token|access[_-]?token|verifier|nonce|oidc[_.-]?state|pkce)/i;
 
-/** Loopback, link-local, and the reserved TLDs that exist for documentation. */
-const LOOPBACK_OR_RESERVED =
-  /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\]|host\.docker\.internal|169\.254(?:\.\d{1,3}){2}|(?:[\w-]+\.)*(?:local|localhost|internal|test|invalid|localdomain)|(?:[\w-]+\.)*example\.(?:com|org|net))$/i;
+/**
+ * Loopback, link-local, and the reserved TLDs that exist for documentation.
+ *
+ * Shared with secret triage via util/hosts.ts — while it lived here, the secrets
+ * collector had no way to know that a documented `postgres://…@localhost` is not
+ * a committed credential.
+ */
+const LOOPBACK_OR_RESERVED = LOOPBACK_OR_RESERVED_HOST;
 
 /** Hosts that appear in source as citations: licences, specs, schemas. */
 const SPEC_OR_LICENCE_HOST =
