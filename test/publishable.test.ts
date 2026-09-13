@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { scanText, triageCandidate, publishableKeyMatch, PUBLISHABLE_KEY_RULES, SECRET_RULES } from '../src/collectors/secrets.js';
-import type { SecretCandidate } from '../src/types.js';
+import { SECURITY_RULES } from '../src/rules/security.js';
+import { maskSource } from '../src/util/lex.js';
+import type { RuleFileContext } from '../src/rules/types.js';
+import type { RuleHit, SecretCandidate, Severity } from '../src/types.js';
 
 /**
  * Publishable-by-design keys are not leaks.
@@ -275,5 +278,53 @@ describe('committed allow annotations', () => {
       ['// gitleaks:allow', `const t = 'ghp_${'c'.repeat(36)}';`, ''].join('\n'),
     );
     expect(live(hits).length, 'the annotation must be on the line it excuses').toBeGreaterThan(0);
+  });
+});
+
+describe('publishable build variables in the client bundle rule', () => {
+  const rule = SECURITY_RULES.find((r) => r.id === 'SEC-SECRET-IN-CLIENT-BUNDLE')!;
+  const scanFile = (path: string, src: string): RuleHit[] => {
+    const ctx: RuleFileContext = {
+      file: { path, absolute: `/repo/${path}`, ext: `.${path.split('.').pop()}`, bytes: src.length, binary: false },
+      src,
+      masked: maskSource(src),
+      isTest: false,
+      root: '/repo',
+    };
+    return rule.scan!(ctx);
+  };
+  const severityOf = (hits: RuleHit[]): Severity => rule.severityFor!(hits);
+
+  it('reports a publishable provider key at Info, not High', () => {
+    const hits = scanFile('frontend/src/utils/analytics.ts', "const token = import.meta.env.VITE_POSTHOG_KEY as string;\n");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta!.benign).toBe(true);
+    expect(hits[0]!.message).toMatch(/publishable by design/);
+    expect(severityOf(hits)).toBe('Info');
+  });
+
+  it('keeps High for a real credential in a public-prefixed variable', () => {
+    for (const name of ['VITE_OPENAI_API_KEY', 'NEXT_PUBLIC_DB_PASSWORD', 'VITE_ADMIN_TOKEN']) {
+      const hits = scanFile('src/env.ts', `const v = import.meta.env.${name} as string;\n`);
+      expect(hits.length, name).toBe(1);
+      expect(hits[0]!.meta!.benign, name).toBe(false);
+      expect(severityOf(hits), name).toBe('High');
+    }
+  });
+
+  it('withdraws the provider exemption when the name means a real credential', () => {
+    // a Sentry *auth token* uploads source maps; it is not the DSN
+    const hits = scanFile('src/env.ts', 'const v = import.meta.env.VITE_SENTRY_AUTH_TOKEN as string;\n');
+    expect(hits[0]!.meta!.benign).toBe(false);
+    expect(severityOf(hits)).toBe('High');
+  });
+
+  it('one real credential among publishable ones keeps the finding at High', () => {
+    const hits = scanFile(
+      'src/env.ts',
+      ['const a = import.meta.env.VITE_POSTHOG_KEY as string;', 'const b = import.meta.env.VITE_STRIPE_SECRET_KEY as string;', ''].join('\n'),
+    );
+    expect(hits).toHaveLength(2);
+    expect(severityOf(hits)).toBe('High');
   });
 });

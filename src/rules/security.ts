@@ -13,6 +13,20 @@ import { hit, JS_TS, type Rule, type RuleFileContext } from './types.js';
  * `why`/`notes` and the verification stage decides whether the claim survives.
  */
 
+/**
+ * Providers whose *client* key is published on purpose — analytics write keys,
+ * error-ingest DSNs, browser map keys, bot-protection site keys. Used by the
+ * client-bundle rule: `VITE_POSTHOG_KEY` names a publishable value, and a High
+ * "secret exposed in the bundle" for it is the rule reading the word KEY and
+ * stopping there. Kept as a name list because the rule sees a variable name, not
+ * a value; the value-shaped allowlist lives in `collectors/secrets.ts`.
+ */
+// `(?:^|_)` rather than `\b`: an underscore is a word character, so `\bPOSTHOG\b`
+// never matches inside `VITE_POSTHOG_KEY` — which is the only shape this list
+// ever sees.
+const PUBLISHABLE_PROVIDER =
+  /(?:^|_)(?:POSTHOG|MIXPANEL|SEGMENT|AMPLITUDE|SENTRY|HEAP|PLAUSIBLE|FATHOM|UMAMI|MATOMO|HOTJAR|LOGROCKET|FULLSTORY|GA4|GTAG|GTM|MAPS|FIREBASE|RECAPTCHA|TURNSTILE|HCAPTCHA|ALGOLIA_SEARCH|STRIPE_PUBLISHABLE|SUPABASE_ANON|PUSHER_APP|INTERCOM|CRISP)(?:_|$)/;
+
 const TOKEN_KEY =
   /(token|jwt|secret|password|passwd|credential|apikey|api[_-]key|session|bearer|refresh|id[_-]?token|access[_-]?token|verifier|nonce|oidc[_.-]?state|pkce)/i;
 
@@ -773,6 +787,9 @@ export const secretInClientBundleRule: Rule = {
   ],
   effort: 'M',
   appliesTo: (f) => JS_TS(f) || ['.env', '.html', '.json', '.yml', '.yaml', ''].includes(f.ext) || f.path.includes('.env'),
+  // A finding made entirely of publishable values is a naming observation, not an
+  // exposure, and must not arrive at the severity of a leaked credential.
+  severityFor: (hits) => (hits.every((h) => h.meta?.benign === true) ? 'Info' : 'High'),
   scan: (ctx) => {
     const hits: RuleHit[] = [];
     const re = /\b((?:VITE|NEXT_PUBLIC|REACT_APP|PUBLIC|EXPO_PUBLIC|GATSBY|NUXT_PUBLIC|VUE_APP)_[A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)[A-Z0-9_]*)\b/g;
@@ -796,15 +813,31 @@ export const secretInClientBundleRule: Rule = {
       // `VITE_OIDC_TOKEN_URL` holds a URL. The credential word is qualified by a
       // locator suffix, so the variable names an endpoint, not a secret.
       if (/_(?:URL|URI|ENDPOINT|PATH|HOST|ORIGIN|BASE|DOMAIN|ISSUER|AUDIENCE|SCOPE|SCOPES|NAME|TTL|EXPIRY|TIMEOUT|HEADER|PARAM|PREFIX|ENABLED|MODE|FILE|FILENAME|DIR|EXT)$/.test(name)) continue;
-      // `*_PUBLIC_KEY` / publishable keys are designed to be shipped.
-      const benign = /_(?:PUBLIC_KEY|PUBLISHABLE_KEY|CLIENT_ID|SITE_KEY|ANON_KEY)$/.test(name);
+      // `*_PUBLIC_KEY` / publishable keys are designed to be shipped, and so is
+      // the key of a provider whose keys are publishable by design. `VITE_POSTHOG_KEY`
+      // holds a write-only project key; reporting it as a High "secret exposed in
+      // the bundle" is the rule reading the word KEY and nothing else.
+      //
+      // The provider exemption is withdrawn the moment the name carries a word
+      // that means a real credential: `VITE_SENTRY_AUTH_TOKEN` uploads source maps
+      // and is emphatically not publishable.
+      const nameSuffixBenign = /_(?:PUBLIC_KEY|PUBLISHABLE_KEY|CLIENT_ID|SITE_KEY|ANON_KEY)$/.test(name);
+      const providerBenign =
+        PUBLISHABLE_PROVIDER.test(name) && !/(?:SECRET|PRIVATE|AUTH_TOKEN|ADMIN|PASSWORD|PASSWD|SERVICE_ACCOUNT|MASTER)/.test(name);
+      const benign = nameSuffixBenign || providerBenign;
       hits.push(
         hit(
           secretInClientBundleRule.id,
           ctx.file.path,
           m.line,
           excerpt(m.lineText.replace(/=.*/, '=<value redacted>')),
-          `client-inlined build variable with a credential-shaped name: ${name}${benign ? ' (name suggests a publishable value — confirm)' : ''}`,
+          `client-inlined build variable with a credential-shaped name: ${name}${
+            providerBenign
+              ? ' — publishable by design: this provider\'s client key is meant to ship in the bundle, so it is reported at Info for confirmation rather than as an exposure'
+              : benign
+                ? ' (name suggests a publishable value — confirm)'
+                : ''
+          }`,
           { name, benign, inTest: ctx.isTest },
         ),
       );
