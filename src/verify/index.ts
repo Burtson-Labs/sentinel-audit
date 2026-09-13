@@ -5,7 +5,7 @@ import { run, git } from '../util/exec.js';
 import { satisfies } from '../util/semver.js';
 import { gateSatisfied } from '../collectors/ci.js';
 import { analyseDockerfile } from '../collectors/docker.js';
-import { surveyEdgeConfig } from '../util/edge.js';
+import { surveyCsp, surveyEdgeConfig } from '../util/edge.js';
 import { resolveInstalledVersions } from './installed.js';
 import type {
   AdvisoryRecord,
@@ -181,6 +181,7 @@ function reassert(ruleId: string, line: string, h: RuleHit): boolean {
     'QUA-CONSOLE-LOGGING': /console\s*\./,
     'QUA-ANY-DENSITY': /\bany\b|@ts-(?:ignore|nocheck|expect-error)|as\s+unknown/,
     'SEC-SOURCEMAP-PUBLISHED': /sourcemap/i,
+    'SEC-CSP-REPORT-ONLY': /Content-Security-Policy-Report-Only|contentSecurityPolicy/i,
     'DOCKER-ROOT': /FROM|USER/i,
     'DOCKER-UNPINNED-BASE': /FROM/i,
     'DOCKER-SECRET-ARG': /ARG|ENV/i,
@@ -513,6 +514,7 @@ function verifyCspAbsence(input: VerifyInput): VerifyResult {
   //    that merely knows the header's name is not this application's policy.
   const anywhere: Array<{ path: string; why: string }> = [];
   const mentionsOnly: string[] = [];
+  const reportOnlyFiles: string[] = [];
   let textCount = 0;
   for (const [path, text] of repoTexts(ctx)) {
     textCount += 1;
@@ -522,10 +524,26 @@ function verifyCspAbsence(input: VerifyInput): VerifyResult {
       continue;
     }
     if (!isPolicyDeclaration(text)) {
-      mentionsOnly.push(`${path} (mentions the header name, no directive list)`);
+      // A report-only policy is the case worth naming separately: it is a real
+      // policy, fully written, that enforces nothing. Filing it under "mentions
+      // the header name" would hide exactly the distinction that matters.
+      const reportOnly = surveyCsp([[path, text]]);
+      mentionsOnly.push(
+        reportOnly.posture === 'report-only'
+          ? `${path} (declares Content-Security-Policy-Report-Only, which enforces nothing — see SEC-CSP-REPORT-ONLY)`
+          : `${path} (mentions the header name, no directive list)`,
+      );
+      if (reportOnly.posture === 'report-only') reportOnlyFiles.push(path);
       continue;
     }
     anywhere.push({ path, why: 'declares a policy' });
+  }
+  if (reportOnlyFiles.length > 0) {
+    checks.push({
+      description: 'distinguished enforcing from report-only policy declarations',
+      outcome: 'pass',
+      detail: `${reportOnlyFiles[0]}:1 — ${reportOnlyFiles.length} file(s) declare Content-Security-Policy-Report-Only and none declare the enforcing header, so no policy is in force: ${reportOnlyFiles.slice(0, 3).join(', ')}`,
+    });
   }
   if (anywhere.length > 0) found = true;
   checks.push({
@@ -581,18 +599,33 @@ function verifyCspAbsence(input: VerifyInput): VerifyResult {
 }
 
 /**
- * Does this text *declare* a CSP, as opposed to mentioning the header's name?
- * A declaration carries at least one directive, or sets the header explicitly.
+ * Does this text declare an *enforcing* CSP, as opposed to mentioning the
+ * header's name or shipping the report-only variant?
+ *
+ * Two things were wrong with the name search this replaces. It refuted the
+ * missing-CSP finding for any file mentioning the header, and — because
+ * `Content-Security-Policy-Report-Only` carries a full directive list — it
+ * refuted it for applications whose policy enforces nothing at all. The name
+ * match now has to end at the name (`(?![-\w])`), and every occurrence is
+ * considered rather than only the first, so a report-only header above an
+ * enforcing one does not decide the answer.
  */
-function isPolicyDeclaration(text: string): boolean {
-  const idx = text.search(/Content-Security-Policy/i);
-  if (idx < 0) return false;
-  const window = text.slice(Math.max(0, idx - 200), idx + 400);
-  if (/\b(?:default|script|style|img|connect|font|frame|object|base|form)-(?:src|uri|action|ancestors)\b/i.test(window)) return true;
-  if (/add_header\s+Content-Security-Policy|http-equiv\s*=\s*["']?Content-Security-Policy|setHeader\s*\(\s*['"`]Content-Security-Policy/i.test(window)) {
-    return true;
+export function isPolicyDeclaration(text: string): boolean {
+  for (const m of text.matchAll(/Content-Security-Policy(?![-\w])/gi)) {
+    const idx = m.index ?? 0;
+    const window = text.slice(Math.max(0, idx - 200), idx + 400);
+    if (/\b(?:default|script|style|img|connect|font|frame|object|base|form)-(?:src|uri|action|ancestors)\b/i.test(window)) return true;
+    if (
+      /add_header\s+["']?Content-Security-Policy(?![-\w])|http-equiv\s*=\s*["']?Content-Security-Policy(?![-\w])|setHeader\s*\(\s*['"`]Content-Security-Policy(?![-\w])/i.test(
+        window,
+      )
+    ) {
+      return true;
+    }
   }
-  if (/contentSecurityPolicy\s*:\s*\{/i.test(text)) return true;
+  // helmet/Traefik name the option rather than the header, and express
+  // report-only as a flag inside it.
+  if (/contentSecurityPolicy\s*:\s*\{/i.test(text) && !/reportOnly\s*:\s*true/i.test(text)) return true;
   return false;
 }
 

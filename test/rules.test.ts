@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { maskSource } from '../src/util/lex.js';
 import { ALL_RULES, ruleById, isVendoredArtifact } from '../src/rules/index.js';
 import { classifyOperand, negativePredicateName, sameFieldComparison, wordTokens } from '../src/rules/crypto.js';
-import { declaresHeader, isEdgeConfigPath, SECURITY_HEADERS, surveyEdgeConfig } from '../src/util/edge.js';
+import { declaresHeader, isEdgeConfigPath, SECURITY_HEADERS, surveyCsp, surveyEdgeConfig } from '../src/util/edge.js';
+import { isPolicyDeclaration } from '../src/verify/index.js';
 import type { RuleFileContext, RuleRepoContext } from '../src/rules/types.js';
 import type { RepoFile } from '../src/util/fsx.js';
 
@@ -705,6 +706,77 @@ describe('aggregate rules', () => {
       'charts/app/values.yaml': INGRESS_WITH_CSP_SNIPPET,
     });
     expect(hits).toHaveLength(0);
+  });
+});
+
+/**
+ * Regression suite for the false *negative* that shipped with the first version
+ * of this rule: `/add_header\s+Content-Security-Policy/` also matches
+ * `Content-Security-Policy-Report-Only`, so an application whose policy blocked
+ * nothing was reported as having a CSP. The tool reassured its reader about the
+ * one header it was asked to check.
+ */
+describe('CSP enforcing vs report-only', () => {
+  const HTML = '<head><meta charset="utf-8"></head>\n';
+  const REPORT_ONLY_CONF = `add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'" always;\n`;
+  const ENFORCING_CONF = `add_header Content-Security-Policy "default-src 'self'; script-src 'self'" always;\n`;
+
+  it('classifies a report-only header as enforcing nothing', () => {
+    const survey = surveyCsp([['nginx/headers.conf', REPORT_ONLY_CONF]]);
+    expect(survey.posture).toBe('report-only');
+    expect(survey.enforcing).toHaveLength(0);
+    expect(survey.reportOnly).toHaveLength(1);
+  });
+
+  it('classifies an enforcing header as enforcing', () => {
+    expect(surveyCsp([['nginx/headers.conf', ENFORCING_CONF]]).posture).toBe('enforcing');
+  });
+
+  it('lets the enforcing header win when both are served', () => {
+    expect(surveyCsp([['nginx/headers.conf', `${REPORT_ONLY_CONF}${ENFORCING_CONF}`]]).posture).toBe('enforcing');
+  });
+
+  it('reads a report-only meta tag and a report-only header configuration', () => {
+    expect(surveyCsp([['index.html', `<meta http-equiv="Content-Security-Policy-Report-Only" content="default-src 'self'">`]]).posture).toBe('report-only');
+    expect(surveyCsp([['public/_headers', "  Content-Security-Policy-Report-Only: default-src 'self'\n"]]).posture).toBe('report-only');
+  });
+
+  it('treats helmet reportOnly:true as report-only and the plain option as enforcing', () => {
+    expect(surveyCsp([['server.ts', "helmet({ contentSecurityPolicy: { reportOnly: true, directives: { defaultSrc: [\"'self'\"] } } })"]]).posture).toBe('report-only');
+    expect(surveyCsp([['server.ts', "helmet({ contentSecurityPolicy: { directives: { defaultSrc: [\"'self'\"] } } })"]]).posture).toBe('enforcing');
+  });
+
+  it('does not report a missing CSP when one is enforced', () => {
+    expect(aggregate('SEC-CSP-MISSING', { 'index.html': HTML, 'nginx/headers.conf': ENFORCING_CONF })).toHaveLength(0);
+    expect(aggregate('SEC-CSP-REPORT-ONLY', { 'index.html': HTML, 'nginx/headers.conf': ENFORCING_CONF })).toHaveLength(0);
+  });
+
+  it('reports report-only as its own finding, not as a policy that exists', () => {
+    const reportOnly = aggregate('SEC-CSP-REPORT-ONLY', { 'index.html': HTML, 'nginx/headers.conf': REPORT_ONLY_CONF });
+    expect(reportOnly).toHaveLength(1);
+    expect(reportOnly[0]!.message).toContain('report-only');
+    expect(reportOnly[0]!.message).toMatch(/blocks nothing/);
+    expect(reportOnly[0]!.file).toBe('nginx/headers.conf');
+    expect(reportOnly[0]!.line).toBe(1);
+    // and the two CSP rules never both fire: this one replaces the absence claim
+    expect(aggregate('SEC-CSP-MISSING', { 'index.html': HTML, 'nginx/headers.conf': REPORT_ONLY_CONF })).toHaveLength(0);
+  });
+
+  it('still reports the absent policy when neither header exists', () => {
+    expect(aggregate('SEC-CSP-MISSING', { 'index.html': HTML, 'nginx/headers.conf': 'add_header X-Frame-Options "DENY" always;\n' })).toHaveLength(1);
+    expect(aggregate('SEC-CSP-REPORT-ONLY', { 'index.html': HTML, 'nginx/headers.conf': 'add_header X-Frame-Options "DENY" always;\n' })).toHaveLength(0);
+  });
+
+  it('keeps both CSP rules silent for a project with no HTML entry document', () => {
+    expect(aggregate('SEC-CSP-REPORT-ONLY', { 'nginx/headers.conf': REPORT_ONLY_CONF })).toHaveLength(0);
+  });
+
+  it('does not let a report-only policy refute the missing-CSP finding at verification', () => {
+    expect(isPolicyDeclaration(REPORT_ONLY_CONF)).toBe(false);
+    expect(isPolicyDeclaration(ENFORCING_CONF)).toBe(true);
+    // both present: the enforcing one is the answer, whichever comes first
+    expect(isPolicyDeclaration(`${REPORT_ONLY_CONF}${ENFORCING_CONF}`)).toBe(true);
+    expect(isPolicyDeclaration('# we should add a Content-Security-Policy one day\n')).toBe(false);
   });
 });
 

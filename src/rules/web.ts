@@ -1,7 +1,7 @@
 import { excerpt } from '../util/fsx.js';
-import { declaresHeader, isEdgeConfigPath, isKubernetesEdgeConfig, SECURITY_HEADERS, surveyEdgeConfig } from '../util/edge.js';
+import { declaresHeader, isEdgeConfigPath, isKubernetesEdgeConfig, SECURITY_HEADERS, surveyCsp, surveyEdgeConfig } from '../util/edge.js';
 import type { RuleHit } from '../types.js';
-import { hit, type Rule } from './types.js';
+import { hit, type Rule, type RuleRepoContext } from './types.js';
 
 /**
  * Web delivery rules: the headers and build settings that decide what an XSS
@@ -15,13 +15,24 @@ import { hit, type Rule } from './types.js';
  * application's defect.
  */
 
-const CSP_SOURCES = [
-  { re: /<meta[^>]+http-equiv\s*=\s*["']?Content-Security-Policy/i, where: 'meta tag' },
-  { re: /add_header\s+Content-Security-Policy/i, where: 'nginx add_header' },
-  { re: /Content-Security-Policy\s*[:=]/i, where: 'header configuration' },
-  { re: /contentSecurityPolicy/i, where: 'helmet/middleware configuration' },
-  { re: /nginx\.ingress\.kubernetes\.io\/(?:configuration|server)-snippet[\s\S]{0,400}?Content-Security-Policy/i, where: 'ingress snippet annotation' },
-];
+/**
+ * Is this a web application at all, and which surfaces could carry the header?
+ *
+ * Shared by the two CSP rules so they cannot disagree about what they searched:
+ * one reports the header absent, the other reports it present-but-inert, and
+ * exactly one of them may fire.
+ */
+function cspSurfaces(ctx: RuleRepoContext): { entry: string; htmlFiles: string[]; searchable: Array<readonly [string, string]> } | null {
+  // Require an HTML entry document.
+  const htmlFiles = Array.from(ctx.texts.keys()).filter((p) => /\.html?$/.test(p) && !p.includes('node_modules'));
+  if (htmlFiles.length === 0) return null;
+  const entry = htmlFiles.find((p) => /(^|\/)index\.html?$/.test(p)) ?? htmlFiles[0]!;
+  // Every surface that could set a header, not just the ones this rule used to
+  // know about. `charts/*/values.yaml` is where the header lives in a
+  // Kubernetes deployment, and it was the file this rule never opened.
+  const searchable = Array.from(ctx.texts.entries()).filter(([p]) => isEdgeConfigPath(p));
+  return { entry, htmlFiles, searchable };
+}
 
 export const cspMissingRule: Rule = {
   id: 'SEC-CSP-MISSING',
@@ -44,26 +55,16 @@ export const cspMissingRule: Rule = {
   effort: 'M',
   appliesTo: () => false,
   aggregate: (ctx) => {
-    // Is this even a web app? Require an HTML entry document.
-    const htmlFiles = Array.from(ctx.texts.keys()).filter((p) => /\.html?$/.test(p) && !p.includes('node_modules'));
-    if (htmlFiles.length === 0) return [];
-    const entry = htmlFiles.find((p) => /(^|\/)index\.html?$/.test(p)) ?? htmlFiles[0]!;
+    const surfaces = cspSurfaces(ctx);
+    if (!surfaces) return [];
+    const { entry, htmlFiles, searchable } = surfaces;
 
-    // Every surface that could set a header, not just the ones this rule used to
-    // know about. `charts/*/values.yaml` is where the header lives in a
-    // Kubernetes deployment, and it was the file this rule never opened.
-    const searchable = Array.from(ctx.texts.entries()).filter(([p]) => isEdgeConfigPath(p));
-
-    const found: Array<{ where: string; path: string }> = [];
-    for (const [path, text] of searchable) {
-      for (const src of CSP_SOURCES) {
-        if (src.re.test(text)) found.push({ where: src.where, path });
-      }
-    }
-    if (found.length > 0) {
-      // CSP exists somewhere — not a finding, but record where for the coverage note.
-      return [];
-    }
+    // Only an *enforcing* header clears this finding. `Content-Security-Policy-
+    // Report-Only` blocks nothing, so an application that ships only that one
+    // ships no policy — it gets SEC-CSP-REPORT-ONLY instead of this, which is
+    // why report-only returns empty here rather than falling through.
+    const csp = surveyCsp(searchable);
+    if (csp.posture !== 'none') return [];
 
     const missingHeaders = SECURITY_HEADERS.filter((h) => !searchable.some(([, text]) => declaresHeader(h, text))).map((h) => h.name);
 
@@ -108,6 +109,66 @@ export const cspMissingRule: Rule = {
   }),
 };
 
+export const cspReportOnlyRule: Rule = {
+  id: 'SEC-CSP-REPORT-ONLY',
+  title: 'Content-Security-Policy is report-only, so it enforces nothing',
+  type: 'Security',
+  // Low, deliberately. A report-only policy is the correct *first* step and
+  // means someone has already done the hard part; it is one header rename away
+  // from being a control. Reporting it at the severity of a missing policy would
+  // punish the team that did the work.
+  severity: 'Low',
+  area: 'Build',
+  labels: ['security', 'headers', 'web'],
+  claimType: 'factual',
+  why:
+    'A `Content-Security-Policy-Report-Only` header is a measurement, not a control: the browser evaluates the policy, reports what it would have blocked, and then renders the page exactly as it would have without the header. Until the header is renamed, an injected script has the full capability of the origin — the protection the policy describes is not in force. The risk is that the header *looks* like a CSP to everything that checks for one, including scanners, so a repository can sit in report-only mode for years believing it is protected.',
+  recommendation:
+    'Collect violations for a defined period, fix or allowlist each one, then rename the header to `Content-Security-Policy`. Keep a report-only copy alongside the enforcing one if you want to keep testing a tighter policy — both headers may be sent at once, which is how the next tightening is staged.',
+  acceptance: [
+    'an enforcing Content-Security-Policy header is served on index.html responses',
+    'the report-only period produced zero unexplained violations before the flip',
+    'a test or smoke check asserts the enforcing header (not only the report-only one) is present on a served response',
+  ],
+  effort: 'S',
+  appliesTo: () => false,
+  aggregate: (ctx) => {
+    const surfaces = cspSurfaces(ctx);
+    if (!surfaces) return [];
+    const csp = surveyCsp(surfaces.searchable);
+    // Enforcing anywhere means the application has a policy; a report-only
+    // header alongside it is a staging copy, which is good practice.
+    if (csp.posture !== 'report-only') return [];
+    const first = csp.reportOnly[0]!;
+    return [
+      hit(
+        cspReportOnlyRule.id,
+        first.path,
+        first.line,
+        excerpt(first.excerpt),
+        `CSP is report-only — it reports violations but blocks nothing. The policy is declared at ${first.path}:${first.line} (${first.where}) as Content-Security-Policy-Report-Only, and no enforcing Content-Security-Policy header was found on any of the ${surfaces.searchable.length} server/edge configuration surface(s) in this repository`,
+        {
+          reportOnlyAt: `${first.path}:${first.line}`,
+          where: first.where,
+          declarations: csp.reportOnly.length,
+          edgeSurfaces: surfaces.searchable.length,
+        },
+      ),
+    ];
+  },
+  fixPlan: (hits) => ({
+    agentExecutable: false,
+    strategy:
+      'Rename the header from `Content-Security-Policy-Report-Only` to `Content-Security-Policy` once the violation log is clean. The policy text does not change; what changes is whether the browser acts on it.',
+    changes: [{ path: hits[0]?.file ?? '<edge/server config>', change: 'rename the report-only header to the enforcing one once violations are triaged' }],
+    acceptanceTests: [{ path: 'test/security/headers.test.ts', description: 'a served response carries an enforcing Content-Security-Policy header' }],
+    risk: 'medium',
+    estimatedDiffSize: 'one header name',
+    notAgentExecutableReason:
+      'Flipping the header is what makes the policy break things. Whether the violation log is clean enough to enforce is an operational judgement, and an agent that renames the header unsupervised ships the outage the report-only period exists to prevent.',
+  }),
+};
+
 export const sourcemapExposureRule: Rule = {
   id: 'SEC-SOURCEMAP-PUBLISHED',
   title: 'Production build publishes source maps',
@@ -149,4 +210,4 @@ export const sourcemapExposureRule: Rule = {
   }),
 };
 
-export const WEB_RULES: Rule[] = [cspMissingRule, sourcemapExposureRule];
+export const WEB_RULES: Rule[] = [cspMissingRule, cspReportOnlyRule, sourcemapExposureRule];

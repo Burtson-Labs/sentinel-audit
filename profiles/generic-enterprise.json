@@ -71,6 +71,9 @@
     "SEC-CSP-MISSING": [
       { "id": "ENG-SEC-HEADERS-01", "title": "Web responses set CSP, HSTS, X-Content-Type-Options and frame-ancestors" }
     ],
+    "SEC-CSP-REPORT-ONLY": [
+      { "id": "ENG-SEC-HEADERS-01", "title": "Web responses set CSP, HSTS, X-Content-Type-Options and frame-ancestors" }
+    ],
     "SEC-TLS-DISABLED": [
       { "id": "ENG-SEC-TRANSPORT-02", "title": "Certificate validation is never disabled outside local development" }
     ],

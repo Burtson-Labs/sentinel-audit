@@ -81,6 +81,9 @@
       { "id": "ASVS 14.4.3", "title": "A Content-Security-Policy response header is set" },
       { "id": "ASVS 14.4.5", "title": "Strict-Transport-Security is set" }
     ],
+    "SEC-CSP-REPORT-ONLY": [
+      { "id": "ASVS 14.4.3", "title": "A Content-Security-Policy response header is set" }
+    ],
     "SEC-TLS-DISABLED": [
       { "id": "ASVS 9.2.1", "title": "Connections use trusted TLS certificates" }
     ],

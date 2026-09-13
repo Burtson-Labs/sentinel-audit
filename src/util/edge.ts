@@ -70,6 +70,115 @@ export function headerSpec(name: string): HeaderSpec | undefined {
   return SECURITY_HEADERS.find((h) => h.name === name);
 }
 
+// ---------------------------------------------------------------------------
+// Content-Security-Policy: enforcing vs report-only
+// ---------------------------------------------------------------------------
+
+/**
+ * `Content-Security-Policy-Report-Only` is a *diagnostic* header. The browser
+ * evaluates the policy and reports what it would have blocked; it blocks
+ * nothing. That distinction is the whole control.
+ *
+ * A name search for `Content-Security-Policy` matches the report-only header
+ * too, so a rule built on one reads "no CSP" as "CSP present" for an
+ * application that enforces nothing — the tool then reassures its reader about
+ * the single header it was asked to check. Every CSP question in this codebase
+ * therefore goes through `surveyCsp`, which answers with a *posture* rather
+ * than a boolean.
+ */
+export type CspPosture = 'enforcing' | 'report-only' | 'none';
+
+export interface CspSighting {
+  /** Which surface expressed it: meta tag, nginx add_header, ingress snippet … */
+  where: string;
+  path: string;
+  line: number;
+  excerpt: string;
+}
+
+/**
+ * The header name, spelled so it cannot match the report-only variant.
+ *
+ * `(?![-\w])` requires the name to end — the next character must be whitespace,
+ * a quote, a colon or a semicolon. That is what rejects `-Report-Only`, and any
+ * future suffixed variant along with it.
+ */
+const CSP_ENFORCING_NAME = String.raw`Content-Security-Policy(?![-\w])`;
+const CSP_REPORT_ONLY_NAME = String.raw`Content-Security-Policy-Report-Only(?![-\w])`;
+
+/** The surfaces a policy can be declared on, for a given spelling of the name. */
+function cspNameSources(name: string): Array<{ re: RegExp; where: string }> {
+  return [
+    { re: new RegExp(`<meta[^>]+http-equiv\\s*=\\s*["']?${name}`, 'gi'), where: 'meta tag' },
+    { re: new RegExp(`add_header\\s+["']?${name}`, 'gi'), where: 'nginx add_header' },
+    { re: new RegExp(`${name}["']?\\s*[:=]`, 'gi'), where: 'header configuration' },
+    {
+      re: new RegExp(`nginx\\.ingress\\.kubernetes\\.io\\/(?:configuration|server)-snippet[\\s\\S]{0,400}?${name}`, 'gi'),
+      where: 'ingress snippet annotation',
+    },
+  ];
+}
+
+/**
+ * helmet/Traefik express the policy as an option object rather than a header
+ * name, and express report-only as a *flag inside* it
+ * (`contentSecurityPolicy: { reportOnly: true, … }`). So the camelCase form is
+ * classified by the flag, not by the identifier.
+ */
+const CSP_HELMET = /contentSecurityPolicy\s*:/gi;
+const HELMET_REPORT_ONLY = /reportOnly\s*:\s*true/i;
+
+function lineOf(text: string, index: number): number {
+  return text.slice(0, index).split('\n').length;
+}
+
+function lineAt(text: string, index: number): string {
+  const start = text.lastIndexOf('\n', index) + 1;
+  const end = text.indexOf('\n', index);
+  return text.slice(start, end === -1 ? undefined : end).trim();
+}
+
+/**
+ * Which CSP postures are declared across the supplied files.
+ *
+ * Callers choose the search set: the CSP rule searches edge-config surfaces,
+ * verification searches every text file in the repository. Enforcing wins over
+ * report-only whenever both exist — an application that ships both headers is
+ * enforcing one policy and measuring another, which is correct practice and not
+ * a finding.
+ */
+export function surveyCsp(texts: Iterable<readonly [string, string]>): {
+  posture: CspPosture;
+  enforcing: CspSighting[];
+  reportOnly: CspSighting[];
+} {
+  const enforcing: CspSighting[] = [];
+  const reportOnly: CspSighting[] = [];
+
+  for (const [path, text] of texts) {
+    const sight = (index: number, where: string): CspSighting => ({ where, path, line: lineOf(text, index), excerpt: lineAt(text, index) });
+
+    for (const { re, where } of cspNameSources(CSP_REPORT_ONLY_NAME)) {
+      for (const m of text.matchAll(re)) reportOnly.push(sight(m.index ?? 0, where));
+    }
+    for (const { re, where } of cspNameSources(CSP_ENFORCING_NAME)) {
+      for (const m of text.matchAll(re)) enforcing.push(sight(m.index ?? 0, where));
+    }
+    for (const m of text.matchAll(CSP_HELMET)) {
+      const index = m.index ?? 0;
+      const options = text.slice(index, index + 600);
+      const target = HELMET_REPORT_ONLY.test(options) ? reportOnly : enforcing;
+      target.push(sight(index, 'helmet/middleware configuration'));
+    }
+  }
+
+  return {
+    posture: enforcing.length > 0 ? 'enforcing' : reportOnly.length > 0 ? 'report-only' : 'none',
+    enforcing,
+    reportOnly,
+  };
+}
+
 /** Is this header configured anywhere in `text`? */
 export function declaresHeader(spec: HeaderSpec, text: string): boolean {
   return spec.patterns.some((re) => re.test(text));

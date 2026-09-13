@@ -83,6 +83,9 @@
       { "id": "CWE-1021", "title": "Improper Restriction of Rendered UI Layers" },
       { "id": "CWE-693", "title": "Protection Mechanism Failure" }
     ],
+    "SEC-CSP-REPORT-ONLY": [
+      { "id": "CWE-693", "title": "Protection Mechanism Failure" }
+    ],
     "SEC-TLS-DISABLED": [
       { "id": "CWE-295", "title": "Improper Certificate Validation" }
     ],
