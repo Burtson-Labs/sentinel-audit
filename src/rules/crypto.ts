@@ -65,7 +65,6 @@ export function wordTokens(identifier: string): string[] {
  * ones worth interrupting someone for.
  */
 const KEYED_TOKENS = new Set([
-  'token',
   'secret',
   'password',
   'passwd',
@@ -79,6 +78,93 @@ const KEYED_TOKENS = new Set([
   'credential',
   'credentials',
 ]);
+
+/**
+ * `token` on its own does not mean authenticator.
+ *
+ * It is the most overloaded word in a JS codebase: a lexer token, an LLM token,
+ * a design token, and — the one that produced six identical wrong High findings
+ * — a monotonic sequence number used to discard a stale async result:
+ *
+ *     const token = ++tokenRef.current;
+ *     const data = await fetch(url);
+ *     if (token !== tokenRef.current) return;   // a newer call started
+ *
+ * That is a correctness guard over an integer counter. Reported as "Authenticator
+ * compared with a short-circuiting operator" at High, it is wrong about the
+ * value, wrong about the consequence, and wrong in a file containing no crypto
+ * at all. So `token` has to earn the classification: either the file performs a
+ * signing/verification operation, or the value is plausibly secret-derived (see
+ * `plausiblySecretValued`). A counter-valued operand is disqualified outright —
+ * even in a crypto module, `++seq` is not an authenticator.
+ */
+const AMBIGUOUS_KEYED_TOKENS = new Set(['token']);
+
+/**
+ * Where a credential plausibly comes from: configuration, the environment, a
+ * request header or cookie, a store, or a literal in the source. A value with
+ * one of these on its right-hand side is the kind of thing that can be compared
+ * wrongly; `++n` is not.
+ */
+const SECRET_SOURCE =
+  /process\s*\.\s*env|import\s*\.\s*meta\s*\.\s*env|Deno\s*\.\s*env|getenv|\bconfig\b|\bsettings\b|\bsecrets?\b|\bheaders?\b|\bauthorization\b|getHeader|\breq\b|\brequest\b|\bcookies?\b|\bbody\b|\bquery\b|\bparams\b|localStorage|sessionStorage|keychain|vault|credential|atob\s*\(|Buffer\s*\.\s*from|decode|['"`]/i;
+
+/**
+ * Initialisers that prove the value is a counter or a clock reading.
+ *
+ * `++x`, a bare integer, `useRef(0)` and `Date.now()` are the four shapes the
+ * stale-async-result idiom actually uses. `useRef(null)` is deliberately absent:
+ * a ref initialised to null is a perfectly ordinary place to keep a token.
+ */
+const COUNTER_VALUED =
+  /(?:\+\+|--)|^-?\d+(?:\.\d+)?$|Date\s*\.\s*now|performance\s*\.\s*now|process\s*\.\s*hrtime|\buse(?:Ref|State|Memo)\s*\(\s*-?\d+\s*\)|\.\s*length\b/;
+
+/**
+ * The identifiers worth looking up a declaration for: the root of the path and
+ * its final segment. `this` is not one of them.
+ */
+function resolvableNames(identifier: string): string[] {
+  const segments = identifier.split(/[.[\]]+/).filter((s) => /^[A-Za-z_$][\w$]*$/.test(s) && s !== 'this');
+  const first = segments[0];
+  const last = segments[segments.length - 1];
+  return Array.from(new Set([first, last].filter((s): s is string => s !== undefined)));
+}
+
+/** The first right-hand side this identifier is assigned in the module, if any. */
+function assignedValue(name: string, masked: string): string | undefined {
+  const re = new RegExp(`\\b${name}\\s*(?::[^=\\n]{0,80})?=\\s*([^;\\n]{0,160})`);
+  return re.exec(masked)?.[1]?.trim();
+}
+
+/** Is this operand an integer counter or a clock reading rather than a secret? */
+export function counterValued(identifier: string, masked: string): boolean {
+  for (const name of resolvableNames(identifier)) {
+    const value = assignedValue(name, masked);
+    if (value !== undefined && COUNTER_VALUED.test(value)) return true;
+  }
+  return false;
+}
+
+/**
+ * Could this operand plausibly hold secret material?
+ *
+ * Name-only classification cannot answer it, so this reads the module: a
+ * declaration from configuration/environment/header, a string-typed declaration
+ * or parameter, or a literal initialiser. With no source to read, it falls back
+ * to the crypto-context gate, which is how the ambiguous names behaved before
+ * this check existed.
+ */
+export function plausiblySecretValued(identifier: string, fileDoesCrypto: boolean, masked?: string): boolean {
+  if (fileDoesCrypto) return true;
+  if (masked === undefined) return false;
+  for (const name of resolvableNames(identifier)) {
+    const value = assignedValue(name, masked);
+    if (value !== undefined && SECRET_SOURCE.test(value)) return true;
+    // A string-typed declaration or parameter: `(providedToken: string)`.
+    if (new RegExp(`\\b${name}\\s*\\??\\s*:\\s*string\\b`).test(masked)) return true;
+  }
+  return false;
+}
 
 /**
  * Tokens that mean "authenticator" in a crypto module and "fingerprint"
@@ -170,11 +256,14 @@ export type OperandClass = 'keyed' | 'digest' | null;
  * are dropped unless the file shows the value was keyed (see `isKeyedDigest`),
  * so an unkeyed content hash never becomes a finding.
  */
-export function classifyOperand(identifier: string, fileDoesCrypto = true): OperandClass {
+export function classifyOperand(identifier: string, fileDoesCrypto = true, masked?: string): OperandClass {
   const tokens = wordTokens(identifier);
   if (tokens.length === 0) return null;
   if (tokens.some((t) => PUBLIC_TOKENS.has(t))) return null;
   if (tokens.some((t) => SAME_ORIGIN_TOKENS.has(t))) return null;
+  // An integer counter is not an authenticator whatever it is called, and
+  // whatever the file around it does.
+  if (masked !== undefined && counterValued(identifier, masked)) return null;
   // `secret.id` holds an identifier, not the secret. Judge the last segment of
   // the path, because that is what the expression actually evaluates to.
   const tail = wordTokens(identifier.split('.').pop() ?? identifier);
@@ -185,6 +274,12 @@ export function classifyOperand(identifier: string, fileDoesCrypto = true): Oper
   const all = [...tokens, ...adjacentPairs];
   const counts = (t: string): boolean => (TAIL_ONLY_TOKENS.has(t) ? t === last : true);
   if (all.some((t) => KEYED_TOKENS.has(t) && counts(t))) return 'keyed';
+  // `token` only counts when the file does crypto or the value looks
+  // secret-derived — the gate CRYPTO_CONTEXT_TOKENS has always had, and which
+  // this set was missing while producing the same class of false positive.
+  if (all.some((t) => AMBIGUOUS_KEYED_TOKENS.has(t) && counts(t)) && plausiblySecretValued(identifier, fileDoesCrypto, masked)) {
+    return 'keyed';
+  }
   if (fileDoesCrypto && all.some((t) => CRYPTO_CONTEXT_TOKENS.has(t) && counts(t))) return 'keyed';
   if (tokens.some((t) => DIGEST_TOKENS.has(t))) return 'digest';
   return null;
@@ -284,7 +379,10 @@ export const timingUnsafeCompareRule: Rule = {
     // precisely the modules it exists to check.
     const guardLines = withoutImports(ctx.masked.code).split('\n');
     const fileDoesCrypto = CRYPTO_CONTEXT.test(ctx.masked.code);
-    const classify = (name: string): OperandClass => classifyOperand(name, fileDoesCrypto);
+    // The masked module is passed so an operand can be judged by how it is
+    // *assigned*, not only by its name: `const token = ++tokenRef.current` is a
+    // sequence number, and no name-only rule can tell.
+    const classify = (name: string): OperandClass => classifyOperand(name, fileDoesCrypto, ctx.masked.code);
     const nearSafeCompare = (line: number): boolean =>
       guardLines
         .slice(Math.max(0, line - 2), line + 1)
@@ -331,10 +429,16 @@ export const timingUnsafeCompareRule: Rule = {
     }
 
     // 2. Buffer comparisons, which short-circuit the same way.
+    //
+    // A byte-wise comparison is itself the context the ambiguous names need:
+    // nobody runs `Buffer.compare` over a sequence number, so the call supplies
+    // the evidence that a name alone cannot. The counter check inside
+    // `classifyOperand` still applies.
+    const classifyBytes = (name: string): OperandClass => classifyOperand(name, true, ctx.masked.code);
     for (const m of matchCode(ctx.src, ctx.masked, /\bBuffer\s*\.\s*compare\s*\(\s*([\w$.]+)\s*,\s*([\w$.]+)/g)) {
       const names = [m.match[1]!, m.match[2]!];
       if (sameFieldComparison(names[0]!, names[1]!)) continue;
-      const which = names.find((n) => classify(n) === 'keyed' || (classify(n) === 'digest' && isKeyedDigest(n, ctx.masked.code)));
+      const which = names.find((n) => classifyBytes(n) === 'keyed' || (classifyBytes(n) === 'digest' && isKeyedDigest(n, ctx.masked.code)));
       if (!which) continue;
       if (nearSafeCompare(m.line)) continue;
       push(m.line, m.lineText, `Buffer.compare() over ${which} returns on the first differing byte`, { kind: 'buffer-compare', operand: which, keyed: true, inTest: ctx.isTest });
@@ -343,7 +447,7 @@ export const timingUnsafeCompareRule: Rule = {
     for (const m of matchCode(ctx.src, ctx.masked, /\b([\w$.]+)\s*\.\s*equals\s*\(\s*([\w$.]+)/g)) {
       const names = [m.match[1]!, m.match[2]!];
       if (sameFieldComparison(names[0]!, names[1]!)) continue;
-      const which = names.find((n) => classify(n) === 'keyed' || (classify(n) === 'digest' && isKeyedDigest(n, ctx.masked.code)));
+      const which = names.find((n) => classifyBytes(n) === 'keyed' || (classifyBytes(n) === 'digest' && isKeyedDigest(n, ctx.masked.code)));
       if (!which) continue;
       if (nearSafeCompare(m.line)) continue;
       push(m.line, m.lineText, `Buffer.equals() over ${which} returns on the first differing byte`, { kind: 'buffer-equals', operand: which, keyed: true, inTest: ctx.isTest });

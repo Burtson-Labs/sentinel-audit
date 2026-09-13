@@ -547,6 +547,108 @@ describe('crypto rule helpers', () => {
     expect(classifyOperand('apiKey', false)).toBe('keyed');
   });
 
+  /**
+   * Regression suite for six identical wrong High findings: the stale-async-result
+   * idiom compares an integer sequence number called `token`, in files that do no
+   * crypto at all.
+   */
+  describe('"token" has to earn the authenticator classification', () => {
+    const STALE_GUARD = [
+      'import { useRef } from "react";',
+      'export function useSearch() {',
+      '  const tokenRef = useRef(0);',
+      '  const run = async (q: string) => {',
+      '    const token = ++tokenRef.current;',
+      '    const rows = await search(q);',
+      '    if (token !== tokenRef.current) return;',
+      '    setRows(rows);',
+      '  };',
+      '  return run;',
+      '}',
+      '',
+    ].join('\n');
+
+    const CLASS_COUNTER = [
+      'export class Player {',
+      '  private token = 0;',
+      '  async load(src: string) {',
+      '    const myToken = ++this.token;',
+      '    const buf = await fetchAudio(src);',
+      '    if (myToken !== this.token) return;',
+      '    this.play(buf);',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+
+    it('does not report a counter named token in a file with no crypto', () => {
+      expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/useSearch.ts', STALE_GUARD)).toHaveLength(0);
+      expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/player.ts', CLASS_COUNTER)).toHaveLength(0);
+    });
+
+    it('disqualifies a counter-valued operand even inside a crypto module', () => {
+      const src = [
+        'import { createHmac } from "node:crypto";',
+        'export function sign(body: string, key: string) {',
+        '  const token = ++counterRef.current;',
+        '  const mac = createHmac("sha256", key).update(body).digest("hex");',
+        '  if (token !== counterRef.current) return null;',
+        '  return mac;',
+        '}',
+        '',
+      ].join('\n');
+      expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/sign.ts', src)).toHaveLength(0);
+    });
+
+    it('still reports a real token comparison in a file that does crypto', () => {
+      const src = [
+        'import { createHmac } from "node:crypto";',
+        'const SECRET_TOKEN = process.env.SECRET_TOKEN ?? "";',
+        'export function authorise(providedToken: string, body: string) {',
+        '  if (providedToken !== SECRET_TOKEN) throw new Error("denied");',
+        '  return createHmac("sha256", SECRET_TOKEN).update(body).digest("hex");',
+        '}',
+        '',
+      ].join('\n');
+      const hits = scan('SEC-TIMING-UNSAFE-COMPARE', 'src/authorise.ts', src);
+      expect(hits).toHaveLength(1);
+      expect(hits[0]!.meta?.keyed).toBe(true);
+      expect(ruleById('SEC-TIMING-UNSAFE-COMPARE')!.severityFor!(hits)).toBe('High');
+    });
+
+    it('still reports a bearer token from a request header in a file with no crypto primitives', () => {
+      const src = [
+        'export function guard(req: Request) {',
+        '  const suppliedToken = req.headers.get("x-api-token") ?? "";',
+        '  const expectedToken = process.env.API_TOKEN ?? "";',
+        '  if (suppliedToken !== expectedToken) return deny();',
+        '  return next();',
+        '}',
+        '',
+      ].join('\n');
+      const hits = scan('SEC-TIMING-UNSAFE-COMPARE', 'src/guard.ts', src);
+      expect(hits).toHaveLength(1);
+      expect(hits[0]!.meta?.keyed).toBe(true);
+    });
+
+    it('classifies the operand from its assignment, not only its name', () => {
+      expect(classifyOperand('token', false, 'const token = ++tokenRef.current;')).toBeNull();
+      expect(classifyOperand('token', false, 'const token = Date.now();')).toBeNull();
+      expect(classifyOperand('tokenRef.current', false, 'const tokenRef = useRef(0);')).toBeNull();
+      expect(classifyOperand('token', false, 'const token = process.env.API_TOKEN;')).toBe('keyed');
+      expect(classifyOperand('token', true, 'const token = req.headers.authorization;')).toBe('keyed');
+      // a ref that holds a token rather than a counter is still an authenticator
+      expect(classifyOperand('tokenRef.current', false, 'const tokenRef = useRef<string | null>(null);\nconst tokenRef: string = "";')).toBe('keyed');
+    });
+
+    it('leaves the unambiguous credential words unconditional', () => {
+      expect(classifyOperand('apiKey', false)).toBe('keyed');
+      expect(classifyOperand('storedPassword', false)).toBe('keyed');
+      expect(classifyOperand('clientSecret', false)).toBe('keyed');
+      expect(classifyOperand('csrf', false)).toBe('keyed');
+    });
+  });
+
   it('recognises a field-to-field comparison', () => {
     expect(sameFieldComparison('this.apiKey', 'options.apiKey')).toBe(true);
     expect(sameFieldComparison('expectedSignature', 'header')).toBe(false);
