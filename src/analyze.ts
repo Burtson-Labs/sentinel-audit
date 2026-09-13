@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { excerpt } from './util/fsx.js';
 import { fingerprint } from './util/hash.js';
 import { applyFloor, controlsFor, standardMappingText, severityRank, type Profile } from './profile.js';
-import { scoreConfidence, statusFromVerification } from './schema.js';
+import { scoreConfidence, statusClass, statusFromVerification } from './schema.js';
 import { ALL_RULES, ruleById } from './rules/index.js';
 import { copyleftDependencies } from './collectors/dependencies.js';
 import { verify, advisoryMeta } from './verify/index.js';
@@ -124,15 +124,14 @@ export function analyze(ctx: ScanContext, repo: RuleRepoContext, options: Analyz
       proofsEnabled: options.proofsEnabled,
     });
 
-    let status = c.triage?.suppressed
+    const status = c.triage?.suppressed
       ? ('triaged-out' as const)
-      : statusFromVerification(c.claimType, verified.verification.result, verified.verification.method);
-
-    // A schema invariant, enforced here rather than discovered at validation:
-    // a behavioral claim without an executed proof cannot be `confirmed`.
-    if (status === 'confirmed' && c.claimType === 'behavioral' && verified.verification.method !== 'proof-executed') {
-      status = 'plausible';
-    }
+      : statusFromVerification(
+          c.claimType,
+          verified.verification.result,
+          verified.verification.method,
+          verified.verification.proof?.verdict,
+        );
 
     let severity = applyFloor(options.profile, c.type, c.severity);
     if (verified.severityHint === 'lower') severity = lower(severity);
@@ -160,7 +159,9 @@ export function analyze(ctx: ScanContext, repo: RuleRepoContext, options: Analyz
       provenance: { ...provenanceBase, llmPass: ctx.llm.available ? 'ran' : ctx.llm.note.includes('disabled') ? 'disabled' : 'unavailable' },
       standardMapping: standardMappingText(options.profile, c.ruleId),
       status,
-      verification: verified.verification,
+      // Stamped in one place, from one source, so `status`,
+      // `verification.state` and `verification.class` cannot disagree.
+      verification: { ...verified.verification, state: status, class: statusClass(status) },
       locations: c.locations,
       standards: {
         profile: options.profile.id,

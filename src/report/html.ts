@@ -1,6 +1,7 @@
 import type { ConfidenceAssessment, Finding, ScanContext, Severity } from '../types.js';
 import type { Profile } from '../profile.js';
 import { band } from './confidence.js';
+import { isPatternConfirmed, isProofConfirmed } from '../schema.js';
 
 /**
  * Self-contained HTML report. No network requests of any kind: no CDN script,
@@ -12,7 +13,8 @@ const SEVERITY_ORDER: Severity[] = ['Blocker', 'High', 'Medium', 'Low', 'Info'];
 
 export function renderHtml(ctx: ScanContext, findings: Finding[], profile: Profile, c: ConfidenceAssessment): string {
   const live = findings.filter((f) => f.status !== 'refuted' && f.status !== 'triaged-out');
-  const confirmed = findings.filter((f) => f.status === 'confirmed');
+  const proofConfirmed = findings.filter((f) => isProofConfirmed(f));
+  const patternConfirmed = findings.filter((f) => isPatternConfirmed(f));
   const plausible = findings.filter((f) => f.status === 'plausible');
   const refuted = findings.filter((f) => f.status === 'refuted');
   const triaged = findings.filter((f) => f.status === 'triaged-out');
@@ -36,7 +38,7 @@ export function renderHtml(ctx: ScanContext, findings: Finding[], profile: Profi
       ${card('Overall', `${c.overallScore}/10`, band(c.overallScore), scoreTone(c.overallScore))}
       ${card('Security posture', `${c.securityPostureScore}/10`, band(c.securityPostureScore), scoreTone(c.securityPostureScore))}
       ${card('Gate', c.gateDecision.replace('-', ' '), profile.gate.blockOn.join('/') + ' block', c.gateDecision === 'block' ? 'bad' : c.gateDecision === 'pass' ? 'good' : 'warn')}
-      ${card('Verified share', `${Math.round(c.evidenceQuality.verifiedShare * 100)}%`, 'of live findings proven by an executed check', c.evidenceQuality.verifiedShare >= 0.5 ? 'good' : 'warn')}
+      ${card('Confirmed share', `${Math.round(c.evidenceQuality.verifiedShare * 100)}%`, `of live findings confirmed by a check · ${Math.round(c.evidenceQuality.provenShare * 100)}% by an executed proof`, c.evidenceQuality.verifiedShare >= 0.5 ? 'good' : 'warn')}
     </div>
   </div>
 </header>
@@ -44,9 +46,10 @@ export function renderHtml(ctx: ScanContext, findings: Finding[], profile: Profi
 <main class="wrap">
   <section class="panel">
     <h2>Verification summary</h2>
-    <p>A finding is <strong>confirmed</strong> only when something ran and agreed with it — an executed proof script for a claim about behaviour, a re-assertion of the artefact from disk for a claim about the code. Findings that did not survive checking stay in the report as <strong>refuted</strong>.</p>
+    <p>The two ways a check can agree are kept apart. <strong>Proof-confirmed</strong>: a generated script ran against the real code and demonstrated the behaviour. <strong>Pattern-confirmed</strong>: the construct was re-read from disk and re-matched — the pattern is genuinely there, but nothing showed it being exploited. Findings that did not survive checking stay in the report as <strong>refuted</strong>.</p>
     <div class="statrow">
-      ${stat('Confirmed', confirmed.length, 'confirmed')}
+      ${stat('Proof-confirmed', proofConfirmed.length, 'proof-confirmed')}
+      ${stat('Pattern-confirmed', patternConfirmed.length, 'pattern-confirmed')}
       ${stat('Plausible', plausible.length, 'plausible')}
       ${stat('Refuted', refuted.length, 'refuted')}
       ${stat('Triaged out', triaged.length, 'triaged')}
@@ -74,7 +77,8 @@ export function renderHtml(ctx: ScanContext, findings: Finding[], profile: Profi
 
   <nav class="filters" aria-label="Filter findings">
     <button class="chip active" data-filter="all">All ${findings.length}</button>
-    <button class="chip" data-filter="confirmed">Confirmed ${confirmed.length}</button>
+    <button class="chip" data-filter="proof-confirmed">Proof-confirmed ${proofConfirmed.length}</button>
+    <button class="chip" data-filter="pattern-confirmed">Pattern-confirmed ${patternConfirmed.length}</button>
     <button class="chip" data-filter="plausible">Plausible ${plausible.length}</button>
     <button class="chip" data-filter="refuted">Refuted ${refuted.length}</button>
     <button class="chip" data-filter="triaged-out">Triaged out ${triaged.length}</button>
@@ -82,7 +86,7 @@ export function renderHtml(ctx: ScanContext, findings: Finding[], profile: Profi
   </nav>
 
   <section id="findings">
-    ${[...confirmed.sort(bySeverity), ...plausible.sort(bySeverity), ...refuted, ...triaged].map(findingCard).join('\n')}
+    ${[...proofConfirmed.sort(bySeverity), ...patternConfirmed.sort(bySeverity), ...plausible.sort(bySeverity), ...refuted, ...triaged].map(findingCard).join('\n')}
   </section>
 
   <section class="panel">
@@ -146,7 +150,8 @@ function findingCard(f: Finding): string {
     <h4>Evidence</h4>
     <p class="mono">${esc(f.evidence)}</p>
 
-    <h4>Verification <span class="small">(${esc(f.verification.method)} · ${esc(f.verification.claimType)} claim · ${esc(f.verification.result)})</span></h4>
+    <h4>Verification <span class="small">(${esc(f.verification.state)} · ${esc(f.verification.method)} · ${esc(f.verification.claimType)} claim · ${esc(f.verification.result)})</span></h4>
+    ${isPatternConfirmed(f) ? '<p class="small">Pattern-confirmed: the construct below was re-read from disk and re-matched. That establishes the pattern, not its exploitability.</p>' : ''}
     <ul class="checks">
       ${f.verification.checks.slice(0, 8).map((chk) => `<li class="chk chk-${chk.outcome}"><strong>${esc(chk.description)}</strong><br><span class="mono small">${esc(chk.detail)}</span></li>`).join('')}
     </ul>
@@ -256,7 +261,8 @@ h1 { margin: 0 0 6px; font-size: clamp(24px, 4vw, 34px); letter-spacing: -.02em;
 .statbox { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; min-width: 110px; background: var(--bg); }
 .statbox .n { display: block; font: 700 22px/1.1 var(--sans); }
 .statbox .l { font-size: 12px; color: var(--muted); }
-.stat-confirmed .n { color: var(--bad); } .stat-plausible .n { color: var(--warn); }
+.stat-proof-confirmed .n { color: var(--bad); } .stat-pattern-confirmed .n { color: var(--mid); }
+.stat-plausible .n { color: var(--warn); }
 .stat-refuted .n { color: var(--good); } .stat-triaged .n { color: var(--muted); }
 .sevbar { display: flex; flex-wrap: wrap; gap: 8px; }
 .sev { font: 600 11px/1 var(--mono); padding: 5px 8px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
@@ -271,14 +277,16 @@ h1 { margin: 0 0 6px; font-size: clamp(24px, 4vw, 34px); letter-spacing: -.02em;
   background: var(--panel); color: var(--ink); cursor: pointer; }
 .chip.active { border-color: var(--accent); color: var(--accent); }
 .finding { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 12px; padding: 18px 20px; margin: 12px 0; }
-.finding[data-status="confirmed"] { border-left-color: var(--bad); }
+.finding[data-status="proof-confirmed"] { border-left-color: var(--bad); }
+.finding[data-status="pattern-confirmed"] { border-left-color: var(--mid); }
 .finding[data-status="plausible"] { border-left-color: var(--warn); }
 .finding[data-status="refuted"] { border-left-color: var(--good); }
 .finding[data-status="triaged-out"] { border-left-color: var(--muted); opacity: .82; }
 .finding header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .finding h3 { margin: 0; font-size: 16px; flex: 1 1 100%; letter-spacing: -.01em; }
 .badge { font: 700 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 5px 8px; border-radius: 5px; }
-.badge-confirmed { background: var(--bad); color: #fff; }
+.badge-proof-confirmed { background: var(--bad); color: #fff; }
+.badge-pattern-confirmed { background: var(--mid); color: #fff; }
 .badge-plausible { background: var(--warn); color: #fff; }
 .badge-refuted { background: var(--good); color: #fff; }
 .badge-triaged-out { background: var(--muted); color: #fff; }

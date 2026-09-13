@@ -1,3 +1,4 @@
+import { isConfirmed, isPatternConfirmed, isProofConfirmed } from '../schema.js';
 import type { ConfidenceAssessment, Finding, ScanContext, Severity } from '../types.js';
 import type { Profile } from '../profile.js';
 
@@ -48,12 +49,15 @@ function severityPenalty(findings: Finding[]): number {
 
 export function assessConfidence(ctx: ScanContext, findings: Finding[], profile: Profile): ConfidenceAssessment {
   const live = findings.filter((f) => f.status !== 'refuted' && f.status !== 'triaged-out');
-  const confirmed = findings.filter((f) => f.status === 'confirmed');
+  const proofConfirmed = findings.filter((f) => isProofConfirmed(f));
+  const patternConfirmed = findings.filter((f) => isPatternConfirmed(f));
+  const confirmed = findings.filter((f) => isConfirmed(f));
   const plausible = findings.filter((f) => f.status === 'plausible');
   const refuted = findings.filter((f) => f.status === 'refuted');
   const triagedOut = findings.filter((f) => f.status === 'triaged-out');
 
   const verifiedShare = live.length === 0 ? 1 : Number((confirmed.length / live.length).toFixed(2));
+  const provenShare = live.length === 0 ? 1 : Number((proofConfirmed.length / live.length).toFixed(2));
 
   // ---- overall score ------------------------------------------------------
   // Start at 10 and subtract weighted risk, then adjust for the engineering
@@ -78,7 +82,7 @@ export function assessConfidence(ctx: ScanContext, findings: Finding[], profile:
 
   const blockers = live.filter((f) => profile.gate.blockOn.includes(f.severity));
   const conditionals = live.filter((f) => profile.gate.conditionalOn.includes(f.severity));
-  const confirmedBlockers = blockers.filter((f) => f.status === 'confirmed');
+  const confirmedBlockers = blockers.filter((f) => isConfirmed(f));
 
   const gateDecision: ConfidenceAssessment['gateDecision'] =
     confirmedBlockers.length > 0 ? 'block' : blockers.length > 0 || conditionals.length > 0 ? 'pass-with-conditions' : 'pass';
@@ -106,6 +110,11 @@ export function assessConfidence(ctx: ScanContext, findings: Finding[], profile:
   const missingGates = missingGateNames(ctx);
   if (missingGates.length > 0) whyNotHigher.push(`CI does not enforce ${missingGates.join(', ')}, so those standards are intent rather than guarantee.`);
   if (verifiedShare < 0.5) whyNotHigher.push(`Only ${Math.round(verifiedShare * 100)}% of live findings are verified by an executed check; the rest are reported as plausible and should be confirmed before large remediation spend.`);
+  if (patternConfirmed.length > 0) {
+    whyNotHigher.push(
+      `${patternConfirmed.length} of ${confirmed.length} confirmed finding(s) are pattern-confirmed only — the construct was re-read from disk and re-matched, which establishes that the pattern exists, not that it is exploitable. Treat them as real code facts with unproven consequences.`,
+    );
+  }
   if (whyNotHigher.length === 0) whyNotHigher.push('No material weakness was found in the areas this scan covers.');
 
   // ---- risk matrix --------------------------------------------------------
@@ -123,6 +132,13 @@ export function assessConfidence(ctx: ScanContext, findings: Finding[], profile:
 
   // ---- signals ------------------------------------------------------------
   const signals: ConfidenceAssessment['signals'] = [];
+  if (patternConfirmed.length > 0 && patternConfirmed.length >= proofConfirmed.length * 2) {
+    signals.push({
+      signal: `${patternConfirmed.length} finding(s) are pattern-confirmed and ${proofConfirmed.length} are proof-confirmed.`,
+      interpretation:
+        'Most of what this report confirms is the presence of a construct, re-read from disk — not a demonstrated exploit. That is a real result and a cheap one; it is not the same as the proof-confirmed set, and budget should not treat them alike.',
+    });
+  }
   if (confirmed.length > 0 && plausible.length > confirmed.length * 2) {
     signals.push({
       signal: `${confirmed.length} finding(s) are verified by execution while ${plausible.length} remain reasoned-only.`,
@@ -159,8 +175,8 @@ export function assessConfidence(ctx: ScanContext, findings: Finding[], profile:
 
   // ---- remediation phases -------------------------------------------------
   const phases: ConfidenceAssessment['remediationPhases'] = [];
-  const phase1 = live.filter((f) => (f.severity === 'Blocker' || f.severity === 'High') && f.status === 'confirmed');
-  const phase1b = live.filter((f) => (f.severity === 'Blocker' || f.severity === 'High') && f.status !== 'confirmed');
+  const phase1 = live.filter((f) => (f.severity === 'Blocker' || f.severity === 'High') && isConfirmed(f));
+  const phase1b = live.filter((f) => (f.severity === 'Blocker' || f.severity === 'High') && !isConfirmed(f));
   const phase2 = live.filter((f) => f.severity === 'Medium');
   const phase3 = live.filter((f) => f.severity === 'Low' || f.severity === 'Info');
 
@@ -179,7 +195,7 @@ export function assessConfidence(ctx: ScanContext, findings: Finding[], profile:
         : '**Gate: pass.** Nothing at or above the profile threshold survived verification.',
   );
   bottomLine.push(
-    `**How much to trust this report:** ${confirmed.length} of ${live.length} live findings (${Math.round(verifiedShare * 100)}%) were verified by something that ran. ${refuted.length} candidate(s) were refuted and ${triagedOut.length} triaged out with reasons — both are listed so you can disagree with the judgement rather than take it on faith.`,
+    `**How much to trust this report:** ${confirmed.length} of ${live.length} live findings (${Math.round(verifiedShare * 100)}%) were verified by something that ran — ${proofConfirmed.length} by an executed proof (${Math.round(provenShare * 100)}% of live findings) and ${patternConfirmed.length} by re-matching the construct on disk, which proves the pattern and not the exploit. ${refuted.length} candidate(s) were refuted and ${triagedOut.length} triaged out with reasons — both are listed so you can disagree with the judgement rather than take it on faith.`,
   );
   bottomLine.push(
     ctx.llm.available
@@ -199,11 +215,14 @@ export function assessConfidence(ctx: ScanContext, findings: Finding[], profile:
     riskMatrix,
     signals,
     evidenceQuality: {
+      proofConfirmed: proofConfirmed.length,
+      patternConfirmed: patternConfirmed.length,
       confirmed: confirmed.length,
       plausible: plausible.length,
       refuted: refuted.length,
       triagedOut: triagedOut.length,
       verifiedShare,
+      provenShare,
     },
     remediationPhases: phases,
     bottomLine,
@@ -241,9 +260,11 @@ function groupBySeverity(findings: Finding[]): Partial<Record<Severity, Finding[
 }
 
 function likelihoodOf(f: Finding): 'Low' | 'Medium' | 'High' {
-  if (f.status === 'confirmed' && f.verification.method === 'proof-executed') return 'High';
-  if (f.status === 'confirmed') return 'Medium';
-  if (f.confidence >= 0.8) return 'Medium';
+  // Only a demonstration earns High. A pattern that re-matched is a Medium:
+  // the code says it, nothing showed it happening.
+  if (isProofConfirmed(f)) return 'High';
+  if (isConfirmed(f)) return 'Medium';
+  if (f.confidence >= 0.85) return 'Medium';
   return 'Low';
 }
 

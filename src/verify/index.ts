@@ -12,8 +12,8 @@ import type {
   ProofRun,
   RuleHit,
   ScanContext,
-  Verification,
   VerificationCheck,
+  VerificationEvidence,
 } from '../types.js';
 import { parseProofOutput, SSRF_PAYLOADS } from './harness.js';
 import {
@@ -29,8 +29,9 @@ import {
 /**
  * Verification stage.
  *
- * Nothing in a Sentinel report says "confirmed" unless something ran. There are
- * exactly two ways to earn it:
+ * Nothing in a Sentinel report says "confirmed" unless something ran, and the
+ * two ways to earn it are reported under different names — `proof-confirmed`
+ * for the first, `pattern-confirmed` for the second:
  *
  *  - **static-assertion** — we re-read the artefact from disk at report time,
  *    independently of the rule pass, and re-established the factual claim
@@ -58,7 +59,12 @@ export interface VerifyInput {
 }
 
 export interface VerifyResult {
-  verification: Verification;
+  /**
+   * Evidence only. A verifier states what it ran and what it found; it does not
+   * get to name the finding's status — `analyze()` derives that, so the labels
+   * and the evidence cannot drift apart.
+   */
+  verification: VerificationEvidence;
   /** Severity adjustment suggested by verification, if any. */
   severityHint?: 'raise' | 'lower';
   /** Extra notes for the report. */

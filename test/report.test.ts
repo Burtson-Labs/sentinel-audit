@@ -104,12 +104,14 @@ function finding(overrides: Partial<Finding> = {}): Finding {
       llmPass: 'unavailable',
     },
     standardMapping: 'OWASP ASVS: 8.2.1',
-    status: 'confirmed',
+    status: 'pattern-confirmed',
     verification: {
       method: 'static-assertion',
       claimType: 'factual',
       performed: true,
       result: 'confirmed',
+      state: 'pattern-confirmed',
+      class: 'confirmed',
       checks: [{ description: 're-read the line', outcome: 'pass', detail: 'src/auth.ts:43 — localStorage.setItem(...)' }],
       notes: 're-read from disk',
     },
@@ -198,6 +200,8 @@ describe('buildSarif', () => {
         claimType: 'behavioral',
         performed: true,
         result: 'refuted',
+        state: 'refuted',
+        class: 'refuted',
         checks: [],
         notes: 'the sanitiser neutralised every payload',
       },
@@ -211,6 +215,7 @@ describe('buildSarif', () => {
   it('suppresses triaged-out findings with the cited reason', () => {
     const triaged = finding({
       status: 'triaged-out',
+      verification: { method: 'static-assertion', claimType: 'factual', performed: true, result: 'confirmed', state: 'triaged-out', class: 'triaged-out', checks: [], notes: 'suppressed' },
       triage: { suppressed: true, reason: 'value is an env reference', evidenceCited: 'src/a.ts:1', by: 'heuristic' },
     });
     const doc = sarif([triaged]) as unknown as { runs: Array<{ results: Array<{ suppressions?: Array<{ justification: string }> }> }> };
@@ -222,7 +227,8 @@ describe('buildSarif', () => {
       runs: Array<{ results: Array<{ properties: { sentinel: { status: string; verificationMethod: string } } }> }>;
     };
     const p = doc.runs[0]!.results[0]!.properties.sentinel;
-    expect(p.status).toBe('confirmed');
+    expect(p.status).toBe('pattern-confirmed');
+    expect(p.statusClass).toBe('confirmed');
     expect(p.verificationMethod).toBe('static-assertion');
   });
 
@@ -255,7 +261,7 @@ describe('assessConfidence', () => {
   });
 
   it('blocks on a confirmed blocker', () => {
-    const blocker = finding({ severity: 'Blocker', status: 'confirmed' });
+    const blocker = finding({ severity: 'Blocker', status: 'pattern-confirmed' });
     const c = assessConfidence(ctx(), [blocker], profile);
     expect(c.gateDecision).toBe('block');
     expect(c.bottomLine.join(' ')).toMatch(/block/i);
@@ -265,7 +271,7 @@ describe('assessConfidence', () => {
     const unproven = finding({
       severity: 'Blocker',
       status: 'plausible',
-      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: 'reasoned' },
+      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', state: 'plausible', class: 'plausible', checks: [], notes: 'reasoned' },
     });
     expect(assessConfidence(ctx(), [unproven], profile).gateDecision).toBe('pass-with-conditions');
   });
@@ -286,18 +292,22 @@ describe('assessConfidence', () => {
   });
 
   it('reports the verified share of live findings', () => {
-    const findings = [finding(), finding({ id: 'SEC-002', status: 'plausible', verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: 'x' } })];
+    const findings = [finding(), finding({ id: 'SEC-002', status: 'plausible', verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', state: 'plausible', class: 'plausible', checks: [], notes: 'x' } })];
     const c = assessConfidence(ctx(), findings, profile);
     expect(c.evidenceQuality.confirmed).toBe(1);
+    expect(c.evidenceQuality.patternConfirmed).toBe(1);
+    expect(c.evidenceQuality.proofConfirmed).toBe(0);
     expect(c.evidenceQuality.plausible).toBe(1);
     expect(c.evidenceQuality.verifiedShare).toBe(0.5);
+    // nothing here was proven by execution, and the report must not imply it was
+    expect(c.evidenceQuality.provenShare).toBe(0);
   });
 
   it('credits refutations in the "why not lower" narrative', () => {
     const refuted = finding({
       status: 'refuted',
       severity: 'Info',
-      verification: { method: 'proof-executed', claimType: 'behavioral', performed: true, result: 'refuted', checks: [], notes: 'safe' },
+      verification: { method: 'proof-executed', claimType: 'behavioral', performed: true, result: 'refuted', state: 'refuted', class: 'refuted', checks: [], notes: 'safe' },
     });
     const c = assessConfidence(ctx(), [refuted], profile);
     expect(c.whyNotLower.join(' ')).toMatch(/refuted/i);
@@ -310,17 +320,20 @@ describe('assessConfidence', () => {
 
   it('derives likelihood from verification strength', () => {
     const proven = finding({
+      status: 'proof-confirmed',
       verification: {
         method: 'proof-executed',
         claimType: 'behavioral',
         performed: true,
         result: 'confirmed',
+        state: 'proof-confirmed',
+        class: 'confirmed',
         checks: [],
         proof: { path: 'p', command: 'c', exitCode: 0, durationMs: 1, predicted: 'p', observed: 'o', verdict: 'vulnerable', stdoutExcerpt: '', stderrExcerpt: '' },
         notes: '',
       },
     });
-    const guessed = finding({ id: 'SEC-002', status: 'plausible', confidence: 0.4, verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: '' } });
+    const guessed = finding({ id: 'SEC-002', status: 'plausible', confidence: 0.4, verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', state: 'plausible', class: 'plausible', checks: [], notes: '' } });
     const c = assessConfidence(ctx(), [proven, guessed], profile);
     expect(c.riskMatrix.find((r) => r.id === 'SEC-001')!.likelihood).toBe('High');
     expect(c.riskMatrix.find((r) => r.id === 'SEC-002')!.likelihood).toBe('Low');
@@ -355,7 +368,7 @@ describe('buildCoverage', () => {
     const inferred = finding({
       id: 'SEC-002',
       status: 'plausible',
-      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: 'reasoned only' },
+      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', state: 'plausible', class: 'plausible', checks: [], notes: 'reasoned only' },
     });
     const cov = buildCoverage(ctx(), [finding(), inferred]);
     expect(cov.verifiedDirectly.join(' ')).toContain('SEC-001');
@@ -365,7 +378,7 @@ describe('buildCoverage', () => {
   it('recommends confirming unproven high-severity findings before spending on them', () => {
     const unproven = finding({
       status: 'plausible',
-      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: 'x' },
+      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', state: 'plausible', class: 'plausible', checks: [], notes: 'x' },
     });
     const cov = buildCoverage(ctx(), [unproven]);
     expect(cov.recommendedFollowUps.join(' ')).toMatch(/before committing remediation budget/);
@@ -378,7 +391,7 @@ describe('renderers', () => {
   it('markdown report includes the verification block and the status', () => {
     const c = assessConfidence(ctx(), [finding()], profile);
     const md = renderReport(ctx(), [finding()], profile, c);
-    expect(md).toContain('CONFIRMED');
+    expect(md).toContain('PATTERN-CONFIRMED');
     expect(md).toContain('**Verification**');
     expect(md).toContain('static-assertion');
     expect(md).toContain('Fix plan');
@@ -388,7 +401,7 @@ describe('renderers', () => {
     const refuted = finding({
       status: 'refuted',
       severity: 'Info',
-      verification: { method: 'proof-executed', claimType: 'behavioral', performed: true, result: 'refuted', checks: [], notes: 'safe' },
+      verification: { method: 'proof-executed', claimType: 'behavioral', performed: true, result: 'refuted', state: 'refuted', class: 'refuted', checks: [], notes: 'safe' },
     });
     const c = assessConfidence(ctx(), [refuted], profile);
     const md = renderReport(ctx(), [refuted], profile, c);
@@ -398,6 +411,7 @@ describe('renderers', () => {
   it('markdown report shows triaged-out items with their reasons', () => {
     const triaged = finding({
       status: 'triaged-out',
+      verification: { method: 'static-assertion', claimType: 'factual', performed: true, result: 'confirmed', state: 'triaged-out', class: 'triaged-out', checks: [], notes: 'suppressed' },
       triage: { suppressed: true, reason: 'value is an env reference', evidenceCited: 'src/a.ts:1', by: 'heuristic' },
     });
     const c = assessConfidence(ctx(), [triaged], profile);
@@ -458,7 +472,7 @@ describe('report sections that make it actionable', () => {
   const profile = loadProfile('owasp-asvs');
 
   it('lists merge blockers with the finding\'s own acceptance criteria as sub-items', () => {
-    const blocker = finding({ severity: 'Blocker', status: 'confirmed' });
+    const blocker = finding({ severity: 'Blocker', status: 'pattern-confirmed' });
     const md = renderReport(ctx(), [blocker], profile, assessConfidence(ctx(), [blocker], profile));
     expect(md).toContain('# Merge blockers');
     expect(md).toContain('- [ ] **SEC-001**');
@@ -469,7 +483,7 @@ describe('report sections that make it actionable', () => {
     const unproven = finding({
       severity: 'High',
       status: 'plausible',
-      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: 'x' },
+      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', state: 'plausible', class: 'plausible', checks: [], notes: 'x' },
     });
     const md = renderReport(ctx(), [unproven], profile, assessConfidence(ctx(), [unproven], profile));
     expect(md).toMatch(/# Merge blockers\n\nNone\./);

@@ -6,7 +6,30 @@ import {
   type Finding,
   type Severity,
   type FindingStatus,
+  type FindingStatusClass,
+  type ProofRun,
 } from './types.js';
+
+/** Coarse class for a precise status. The only place the mapping is written. */
+export function statusClass(status: FindingStatus): FindingStatusClass {
+  if (status === 'proof-confirmed' || status === 'pattern-confirmed') return 'confirmed';
+  return status;
+}
+
+/** Did something run and agree, by either route? */
+export function isConfirmed(f: Pick<Finding, 'status'>): boolean {
+  return f.status === 'proof-confirmed' || f.status === 'pattern-confirmed';
+}
+
+/** Was the agreement an executed proof against the real code? */
+export function isProofConfirmed(f: Pick<Finding, 'status'>): boolean {
+  return f.status === 'proof-confirmed';
+}
+
+/** Was the agreement only a re-matched static/lexical assertion? */
+export function isPatternConfirmed(f: Pick<Finding, 'status'>): boolean {
+  return f.status === 'pattern-confirmed';
+}
 
 /**
  * Hand-rolled validation instead of a schema library, for two reasons:
@@ -109,22 +132,46 @@ export function validateFinding(f: Partial<Finding>): ValidationIssue[] {
     }
   }
 
-  if (f.status === 'confirmed') {
-    if (!v.performed) err('status', '"confirmed" requires verification.performed === true');
+  // The precise state and the coarse class are derived from `status`, so a
+  // disagreement means something wrote one of them by hand.
+  if (f.status && STATUSES.includes(f.status)) {
+    if (v.state !== f.status) err('verification.state', `must equal status ("${f.status}"), got "${String(v.state)}"`);
+    if (v.class !== statusClass(f.status)) {
+      err('verification.class', `must be "${statusClass(f.status)}" for status "${f.status}", got "${String(v.class)}"`);
+    }
+  }
+
+  if (isConfirmed(f as Pick<Finding, 'status'>)) {
+    if (!v.performed) err('status', `"${f.status}" requires verification.performed === true`);
     if (v.method === 'code-read' || v.method === 'not-attempted') {
-      err('status', `"confirmed" is not permitted with verification.method "${v.method}" — cap at "plausible"`);
-    }
-    if (v.claimType === 'behavioral' && v.method !== 'proof-executed') {
-      err(
-        'status',
-        '"confirmed" on a behavioral claim requires an executed proof (verification.method "proof-executed")',
-      );
-    }
-    if (v.claimType === 'behavioral' && v.proof?.verdict !== 'vulnerable') {
-      err('verification.proof.verdict', 'a confirmed behavioral finding must have a proof verdict of "vulnerable"');
+      err('status', `"${f.status}" is not permitted with verification.method "${v.method}" — cap at "plausible"`);
     }
     if (!v.checks.some((c) => c.outcome !== 'skip')) {
-      err('verification.checks', '"confirmed" requires at least one executed check');
+      err('verification.checks', `"${f.status}" requires at least one executed check`);
+    }
+  }
+
+  if (f.status === 'proof-confirmed') {
+    if (v.method !== 'proof-executed') {
+      err('status', '"proof-confirmed" requires verification.method "proof-executed" — a re-matched pattern is "pattern-confirmed"');
+    }
+    if (v.proof?.verdict !== 'vulnerable') {
+      err('verification.proof.verdict', 'a proof-confirmed finding must carry a proof whose verdict is "vulnerable"');
+    }
+  }
+
+  if (f.status === 'pattern-confirmed') {
+    // This is the whole point of the split: a claim about *behaviour* cannot be
+    // settled by re-matching a regex, so it may never reach a confirmed state
+    // without a proof.
+    if (v.claimType === 'behavioral') {
+      err(
+        'status',
+        '"pattern-confirmed" is not permitted on a behavioral claim — re-matching a construct does not establish exploitability, so cap at "plausible"',
+      );
+    }
+    if (v.method === 'proof-executed' && v.proof?.verdict === 'vulnerable') {
+      err('status', 'an executed proof returned "vulnerable" — this finding is "proof-confirmed", not "pattern-confirmed"');
     }
   }
 
@@ -196,7 +243,10 @@ export function scoreConfidence(f: Pick<Finding, 'status' | 'verification' | 'so
       base = v.proof?.verdict === 'vulnerable' ? 0.97 : 0.6;
       break;
     case 'static-assertion':
-      base = 0.88;
+      // Deliberately well below an executed proof. A re-matched pattern tells
+      // you the construct is there; it says nothing about whether it can be
+      // exploited, and the number should not let a reader confuse the two.
+      base = 0.8;
       break;
     case 'tool-output':
       base = 0.8;
@@ -214,16 +264,31 @@ export function scoreConfidence(f: Pick<Finding, 'status' | 'verification' | 'so
   return Math.max(0.05, Math.min(0.99, Number(base.toFixed(2))));
 }
 
+/**
+ * Map a verification outcome onto a status. The split between the two confirmed
+ * states lives here and nowhere else:
+ *
+ *  - an executed proof that agreed  → `proof-confirmed`
+ *  - anything else that agreed       → `pattern-confirmed`, and only for a
+ *    factual claim; a behavioural claim without a proof stays `plausible`.
+ */
 export function statusFromVerification(
   claimType: 'factual' | 'behavioral',
   result: 'confirmed' | 'plausible' | 'refuted' | 'inconclusive',
   method: Finding['verification']['method'],
+  proofVerdict?: ProofRun['verdict'],
 ): FindingStatus {
   if (result === 'refuted') return 'refuted';
   if (result === 'confirmed') {
     if (method === 'code-read' || method === 'not-attempted') return 'plausible';
-    if (claimType === 'behavioral' && method !== 'proof-executed') return 'plausible';
-    return 'confirmed';
+    if (method === 'proof-executed') {
+      // A proof only earns the strong label when it actually demonstrated the
+      // behaviour. A proof that ran and reached no verdict is not evidence.
+      if (proofVerdict === 'vulnerable') return 'proof-confirmed';
+      return claimType === 'behavioral' ? 'plausible' : 'pattern-confirmed';
+    }
+    if (claimType === 'behavioral') return 'plausible';
+    return 'pattern-confirmed';
   }
   return 'plausible';
 }

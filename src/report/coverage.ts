@@ -115,7 +115,7 @@ export function buildCoverage(ctx: ScanContext, findings: Finding[]): CoverageRe
   // ---- verified vs inferred ---------------------------------------------
   const verifiedDirectly = findings
     .filter((f) => f.verification.performed && (f.verification.method === 'proof-executed' || f.verification.method === 'static-assertion'))
-    .map((f) => `${f.id} (${f.verification.method}): ${f.title}`);
+    .map((f) => `${f.id} (${f.verification.state} via ${f.verification.method}): ${f.title}`);
   const inferredOnly = findings
     .filter((f) => !f.verification.performed || f.verification.method === 'code-read' || f.verification.method === 'tool-output')
     .map((f) => `${f.id} (${f.verification.method}): ${f.title} — ${f.verification.notes.slice(0, 160)}`);

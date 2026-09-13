@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { validateFinding, validateFindings, scoreConfidence, statusFromVerification } from '../src/schema.js';
+import {
+  validateFinding,
+  validateFindings,
+  scoreConfidence,
+  statusFromVerification,
+  statusClass,
+  isConfirmed,
+  isProofConfirmed,
+} from '../src/schema.js';
 import type { Finding } from '../src/types.js';
 
 function baseFinding(overrides: Partial<Finding> = {}): Finding {
@@ -33,6 +41,8 @@ function baseFinding(overrides: Partial<Finding> = {}): Finding {
       claimType: 'behavioral',
       performed: false,
       result: 'plausible',
+      state: 'plausible',
+      class: 'plausible',
       checks: [],
       notes: 'reasoned only',
     },
@@ -91,91 +101,143 @@ describe('validateFinding — structure', () => {
   });
 });
 
+const VULNERABLE_PROOF = {
+  path: 'proofs/x.mjs',
+  command: 'node proofs/x.mjs',
+  exitCode: 0,
+  durationMs: 10,
+  predicted: 'a payload survives',
+  observed: '1 of 15 survived',
+  verdict: 'vulnerable' as const,
+  stdoutExcerpt: '',
+  stderrExcerpt: '',
+};
+
 describe('validateFinding — the invariants that make the tool mean something', () => {
-  it('forbids "confirmed" when nothing was executed', () => {
-    const f = baseFinding({ status: 'confirmed' });
+  it('forbids a confirmed state when nothing was executed', () => {
+    const f = baseFinding({ status: 'pattern-confirmed' });
+    f.verification = { ...f.verification, state: 'pattern-confirmed', class: 'confirmed', claimType: 'factual' };
     expect(errors(f).join()).toMatch(/performed === true/);
   });
 
-  it('forbids "confirmed" for a code-read verification', () => {
-    const f = baseFinding({ status: 'confirmed' });
-    f.verification.performed = true;
-    f.verification.method = 'code-read';
+  it('forbids a confirmed state for a code-read verification', () => {
+    const f = baseFinding({ status: 'pattern-confirmed' });
+    f.verification = { ...f.verification, state: 'pattern-confirmed', class: 'confirmed', claimType: 'factual', performed: true, method: 'code-read' };
     expect(errors(f).join()).toMatch(/not permitted with verification.method/);
   });
 
-  it('forbids "confirmed" on a behavioural claim without an executed proof', () => {
-    const f = baseFinding({ status: 'confirmed' });
+  it('forbids "pattern-confirmed" on a behavioural claim — a re-matched regex is not exploitability', () => {
+    const f = baseFinding({ status: 'pattern-confirmed' });
     f.verification = {
       method: 'static-assertion',
       claimType: 'behavioral',
       performed: true,
       result: 'confirmed',
+      state: 'pattern-confirmed',
+      class: 'confirmed',
       checks: [{ description: 're-read the line', outcome: 'pass', detail: 'src/app.ts:42' }],
       notes: 'the construct is present',
     };
-    expect(errors(f).join()).toMatch(/requires an executed proof/);
+    expect(errors(f).join()).toMatch(/not permitted on a behavioral claim/);
   });
 
-  it('allows "confirmed" on a factual claim verified by re-assertion', () => {
-    const f = baseFinding({ status: 'confirmed' });
+  it('allows "pattern-confirmed" on a factual claim verified by re-assertion', () => {
+    const f = baseFinding({ status: 'pattern-confirmed' });
     f.verification = {
       method: 'static-assertion',
       claimType: 'factual',
       performed: true,
       result: 'confirmed',
+      state: 'pattern-confirmed',
+      class: 'confirmed',
       checks: [{ description: 're-read the line', outcome: 'pass', detail: 'src/app.ts:42' }],
       notes: 'the construct is present',
     };
     expect(errors(f)).toEqual([]);
   });
 
-  it('allows "confirmed" on a behavioural claim with a vulnerable proof verdict', () => {
-    const f = baseFinding({ status: 'confirmed' });
+  it('forbids "proof-confirmed" without an executed proof', () => {
+    const f = baseFinding({ status: 'proof-confirmed' });
+    f.verification = {
+      method: 'static-assertion',
+      claimType: 'factual',
+      performed: true,
+      result: 'confirmed',
+      state: 'proof-confirmed',
+      class: 'confirmed',
+      checks: [{ description: 're-read the line', outcome: 'pass', detail: 'src/app.ts:42' }],
+      notes: 'the construct is present',
+    };
+    expect(errors(f).join()).toMatch(/requires verification.method "proof-executed"/);
+  });
+
+  it('allows "proof-confirmed" on a behavioural claim with a vulnerable proof verdict', () => {
+    const f = baseFinding({ status: 'proof-confirmed' });
     f.verification = {
       method: 'proof-executed',
       claimType: 'behavioral',
       performed: true,
       result: 'confirmed',
+      state: 'proof-confirmed',
+      class: 'confirmed',
       checks: [{ description: 'ran the proof', outcome: 'pass', detail: 'proofs/x.mjs' }],
-      proof: {
-        path: 'proofs/x.mjs',
-        command: 'node proofs/x.mjs',
-        exitCode: 0,
-        durationMs: 10,
-        predicted: 'a payload survives',
-        observed: '1 of 15 survived',
-        verdict: 'vulnerable',
-        stdoutExcerpt: '',
-        stderrExcerpt: '',
-      },
+      proof: VULNERABLE_PROOF,
       notes: 'proof ran',
     };
     expect(errors(f)).toEqual([]);
   });
 
-  it('forbids "confirmed" when the attached proof says the code is safe', () => {
-    const f = baseFinding({ status: 'confirmed' });
+  it('forbids "proof-confirmed" when the attached proof says the code is safe', () => {
+    const f = baseFinding({ status: 'proof-confirmed' });
     f.verification = {
       method: 'proof-executed',
       claimType: 'behavioral',
       performed: true,
       result: 'confirmed',
+      state: 'proof-confirmed',
+      class: 'confirmed',
       checks: [{ description: 'ran the proof', outcome: 'fail', detail: 'proofs/x.mjs' }],
-      proof: {
-        path: 'proofs/x.mjs',
-        command: 'node proofs/x.mjs',
-        exitCode: 0,
-        durationMs: 10,
-        predicted: 'a payload survives',
-        observed: 'none survived',
-        verdict: 'safe',
-        stdoutExcerpt: '',
-        stderrExcerpt: '',
-      },
+      proof: { ...VULNERABLE_PROOF, observed: 'none survived', verdict: 'safe' },
       notes: 'proof ran',
     };
-    expect(errors(f).join()).toMatch(/proof verdict of "vulnerable"/);
+    expect(errors(f).join()).toMatch(/verdict is "vulnerable"/);
+  });
+
+  it('forbids calling an executed vulnerable proof "pattern-confirmed" — it undersells, and the split must be exact', () => {
+    const f = baseFinding({ status: 'pattern-confirmed' });
+    f.verification = {
+      method: 'proof-executed',
+      claimType: 'factual',
+      performed: true,
+      result: 'confirmed',
+      state: 'pattern-confirmed',
+      class: 'confirmed',
+      checks: [{ description: 'ran the proof', outcome: 'pass', detail: 'proofs/x.mjs' }],
+      proof: VULNERABLE_PROOF,
+      notes: 'proof ran',
+    };
+    expect(errors(f).join()).toMatch(/is "proof-confirmed", not "pattern-confirmed"/);
+  });
+
+  it('rejects a verification.state that disagrees with status', () => {
+    const f = baseFinding({ status: 'plausible' });
+    f.verification = { ...f.verification, state: 'proof-confirmed', class: 'confirmed' };
+    expect(errors(f).join()).toMatch(/verification.state: must equal status/);
+  });
+
+  it('rejects a verification.class that does not match its state', () => {
+    const f = baseFinding({ status: 'pattern-confirmed' });
+    f.verification = {
+      method: 'static-assertion',
+      claimType: 'factual',
+      performed: true,
+      result: 'confirmed',
+      state: 'pattern-confirmed',
+      class: 'plausible',
+      checks: [{ description: 're-read the line', outcome: 'pass', detail: 'src/app.ts:42' }],
+      notes: 'present',
+    };
+    expect(errors(f).join()).toMatch(/verification.class: must be "confirmed"/);
   });
 
   it('requires a cited location for a suppression', () => {
@@ -191,11 +253,13 @@ describe('validateFinding — the invariants that make the tool mean something',
       status: 'triaged-out',
       triage: { suppressed: true, reason: 'the value is an env reference', evidenceCited: 'src/app.ts:42', by: 'llm' },
     });
+    f.verification = { ...f.verification, state: 'triaged-out', class: 'triaged-out' };
     expect(errors(f)).toEqual([]);
   });
 
   it('requires a refutation to have been executed', () => {
     const f = baseFinding({ status: 'refuted' });
+    f.verification = { ...f.verification, state: 'refuted', class: 'refuted' };
     expect(errors(f).join()).toMatch(/requires an executed check/);
   });
 });
@@ -213,43 +277,59 @@ describe('validateFindings — cross-finding checks', () => {
 });
 
 describe('scoreConfidence', () => {
-  it('is highest for an executed proof that found the issue', () => {
-    const score = scoreConfidence({
-      status: 'confirmed',
+  const proofScore = (): number =>
+    scoreConfidence({
+      status: 'proof-confirmed',
       source: 'rule',
       verification: {
         method: 'proof-executed',
         claimType: 'behavioral',
         performed: true,
         result: 'confirmed',
+        state: 'proof-confirmed',
+        class: 'confirmed',
         checks: [{ description: 'x', outcome: 'pass', detail: 'a:1' }],
-        proof: {
-          path: 'p',
-          command: 'c',
-          exitCode: 0,
-          durationMs: 1,
-          predicted: 'p',
-          observed: 'o',
-          verdict: 'vulnerable',
-          stdoutExcerpt: '',
-          stderrExcerpt: '',
-        },
+        proof: VULNERABLE_PROOF,
         notes: '',
       },
     });
-    expect(score).toBeGreaterThan(0.95);
+
+  const patternScore = (): number =>
+    scoreConfidence({
+      status: 'pattern-confirmed',
+      source: 'rule',
+      verification: {
+        method: 'static-assertion',
+        claimType: 'factual',
+        performed: true,
+        result: 'confirmed',
+        state: 'pattern-confirmed',
+        class: 'confirmed',
+        checks: [{ description: 'x', outcome: 'pass', detail: 'a:1' }],
+        notes: '',
+      },
+    });
+
+  it('is highest for an executed proof that found the issue', () => {
+    expect(proofScore()).toBeGreaterThan(0.95);
+  });
+
+  it('weights proof-confirmed clearly above pattern-confirmed', () => {
+    // Not a hair's breadth: the gap has to be visible in the number, or the
+    // column stops carrying the distinction the status names make.
+    expect(patternScore()).toBeLessThan(proofScore() - 0.1);
   });
 
   it('penalises a model-proposed, code-read finding', () => {
     const llm = scoreConfidence({
       status: 'plausible',
       source: 'llm',
-      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: '' },
+      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', state: 'plausible', class: 'plausible', checks: [], notes: '' },
     });
     const rule = scoreConfidence({
       status: 'plausible',
       source: 'rule',
-      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', checks: [], notes: '' },
+      verification: { method: 'code-read', claimType: 'behavioral', performed: false, result: 'plausible', state: 'plausible', class: 'plausible', checks: [], notes: '' },
     });
     expect(llm).toBeLessThan(rule);
   });
@@ -258,9 +338,30 @@ describe('scoreConfidence', () => {
     const score = scoreConfidence({
       status: 'refuted',
       source: 'rule',
-      verification: { method: 'proof-executed', claimType: 'behavioral', performed: true, result: 'refuted', checks: [], notes: '' },
+      verification: { method: 'proof-executed', claimType: 'behavioral', performed: true, result: 'refuted', state: 'refuted', class: 'refuted', checks: [], notes: '' },
     });
     expect(score).toBeGreaterThan(0.9);
+  });
+});
+
+describe('statusClass', () => {
+  it('folds both confirmed states onto the older coarse vocabulary', () => {
+    expect(statusClass('proof-confirmed')).toBe('confirmed');
+    expect(statusClass('pattern-confirmed')).toBe('confirmed');
+  });
+
+  it('leaves the other states alone', () => {
+    expect(statusClass('plausible')).toBe('plausible');
+    expect(statusClass('refuted')).toBe('refuted');
+    expect(statusClass('triaged-out')).toBe('triaged-out');
+  });
+
+  it('isConfirmed accepts both, isProofConfirmed only the proven one', () => {
+    expect(isConfirmed({ status: 'pattern-confirmed' })).toBe(true);
+    expect(isConfirmed({ status: 'proof-confirmed' })).toBe(true);
+    expect(isConfirmed({ status: 'plausible' })).toBe(false);
+    expect(isProofConfirmed({ status: 'pattern-confirmed' })).toBe(false);
+    expect(isProofConfirmed({ status: 'proof-confirmed' })).toBe(true);
   });
 });
 
@@ -269,8 +370,18 @@ describe('statusFromVerification', () => {
     expect(statusFromVerification('behavioral', 'confirmed', 'static-assertion')).toBe('plausible');
   });
 
-  it('allows a factual confirmation by re-assertion', () => {
-    expect(statusFromVerification('factual', 'confirmed', 'static-assertion')).toBe('confirmed');
+  it('labels a factual re-assertion pattern-confirmed, never plain confirmed', () => {
+    expect(statusFromVerification('factual', 'confirmed', 'static-assertion')).toBe('pattern-confirmed');
+  });
+
+  it('labels an executed proof with a vulnerable verdict proof-confirmed', () => {
+    expect(statusFromVerification('behavioral', 'confirmed', 'proof-executed', 'vulnerable')).toBe('proof-confirmed');
+    expect(statusFromVerification('factual', 'confirmed', 'proof-executed', 'vulnerable')).toBe('proof-confirmed');
+  });
+
+  it('does not hand the strong label to a proof that reached no verdict', () => {
+    expect(statusFromVerification('behavioral', 'confirmed', 'proof-executed', 'inconclusive')).toBe('plausible');
+    expect(statusFromVerification('factual', 'confirmed', 'proof-executed', 'inconclusive')).toBe('pattern-confirmed');
   });
 
   it('never promotes a code-read result', () => {

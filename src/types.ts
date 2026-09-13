@@ -32,11 +32,35 @@ export const EFFORTS = ['S', 'M', 'L', 'XL'] as const;
 export type Effort = (typeof EFFORTS)[number];
 
 /**
- * The headline field. A finding is only `confirmed` when an executed check
- * agreed with the claim; `refuted` findings are kept in the report on purpose.
+ * The headline field, and the one most likely to be over-read.
+ *
+ * There are two ways a check can agree with a claim, and they are not worth the
+ * same thing, so they do not share a label:
+ *
+ *  - `proof-confirmed`   — a generated script exercised the real code and
+ *                          returned a `vulnerable` verdict. The strong claim.
+ *  - `pattern-confirmed` — a static/lexical assertion was re-established from
+ *                          disk: the construct *is* at that line, the policy
+ *                          *is* absent, the vulnerable version *is* installed.
+ *                          The pattern exists; exploitability is unproven.
+ *
+ * `refuted` findings are kept in the report on purpose.
+ *
+ * Schema note (0.2.0): these two values replace the single `confirmed` value.
+ * `verification.class` carries the older coarse vocabulary for consumers written
+ * against it — see `FindingStatusClass`.
  */
-export const STATUSES = ['confirmed', 'plausible', 'refuted', 'triaged-out'] as const;
+export const STATUSES = ['proof-confirmed', 'pattern-confirmed', 'plausible', 'refuted', 'triaged-out'] as const;
 export type FindingStatus = (typeof STATUSES)[number];
+
+/**
+ * The coarser vocabulary: what `status` used to say. Emitted alongside the
+ * precise state as `verification.class` so a consumer that only wants
+ * "confirmed vs not" does not have to learn the split, and one written before
+ * the split keeps working.
+ */
+export const STATUS_CLASSES = ['confirmed', 'plausible', 'refuted', 'triaged-out'] as const;
+export type FindingStatusClass = (typeof STATUS_CLASSES)[number];
 
 /**
  * What kind of claim the finding makes — this governs what "confirmed" is
@@ -87,7 +111,19 @@ export interface Verification {
   claimType: ClaimType;
   /** Did we actually run something, or is this reasoning only? */
   performed: boolean;
+  /**
+   * What the verifier concluded, independently of triage. Unchanged meaning
+   * since 0.1.0 — `confirmed` here says "the check agreed", and the strength of
+   * that agreement is read off `method`/`state`.
+   */
   result: 'confirmed' | 'plausible' | 'refuted' | 'inconclusive';
+  /**
+   * The finding's precise status, mirrored here so the verification block can be
+   * consumed on its own. Always equal to `Finding.status`.
+   */
+  state: FindingStatus;
+  /** Coarse status for consumers written against the pre-0.2.0 vocabulary. */
+  class: FindingStatusClass;
   /** Individual executed checks, each with file:line grade evidence. */
   checks: VerificationCheck[];
   /** Present when a runnable proof was generated and executed. */
@@ -95,6 +131,13 @@ export interface Verification {
   /** Why this verification result and not a stronger one. */
   notes: string;
 }
+
+/**
+ * What a verifier produces. It deliberately cannot set `state`/`class`: those
+ * depend on triage decisions made after verification, and are stamped in one
+ * place (`analyze()`) so the two fields can never disagree with `status`.
+ */
+export type VerificationEvidence = Omit<Verification, 'state' | 'class'>;
 
 export interface CodeLocation {
   /** Repo-relative POSIX path. */
@@ -392,11 +435,19 @@ export interface ConfidenceAssessment {
   signals: Array<{ signal: string; interpretation: string }>;
   /** How much of the score rests on verified vs asserted findings. */
   evidenceQuality: {
+    /** An executed proof demonstrated the behaviour. */
+    proofConfirmed: number;
+    /** A static/lexical assertion re-matched. The pattern exists; nothing more. */
+    patternConfirmed: number;
+    /** Coarse sum of the two above, for continuity with the older vocabulary. */
     confirmed: number;
     plausible: number;
     refuted: number;
     triagedOut: number;
+    /** Share of live findings in either confirmed state. */
     verifiedShare: number;
+    /** Share of live findings an executed proof demonstrated. The strong number. */
+    provenShare: number;
   };
   remediationPhases: Array<{ phase: string; items: string[]; estimate: string }>;
   bottomLine: string[];

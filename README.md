@@ -23,9 +23,10 @@
 
 Most security reviews — human or AI — hand you a list of assertions. Sentinel hands
 you a list of *checked* assertions, each labelled with how it was checked and what
-happened: `confirmed`, `plausible`, `refuted`, or `triaged-out`. Where it can, it
-writes a runnable proof script, executes it against your real code, and saves the
-script next to the report so you can re-run it yourself.
+happened: `proof-confirmed`, `pattern-confirmed`, `plausible`, `refuted`, or
+`triaged-out`. Where it can, it writes a runnable proof script, executes it against
+your real code, and saves the script next to the report so you can re-run it
+yourself.
 
 > A refuted finding is a feature. Sentinel keeps them in the report, because "we
 > checked this and your protection works" is information you paid for too — and
@@ -33,19 +34,22 @@ script next to the report so you can re-run it yourself.
 > problems it reports.
 
 ```
-confirmed    23   (an executed check agreed)
-plausible     5   (reasoned, unproven)
-refuted       1   (an executed check disproved it)
-triaged out   1   (noise, with reasons)
+proof-confirmed     4   (an executed proof demonstrated it)
+pattern-confirmed  19   (the pattern re-matched; exploitability unproven)
+plausible           5   (reasoned, unproven)
+refuted             1   (an executed check disproved it)
+triaged out         1   (noise, with reasons)
 
 score 5.4/10 (acceptable / moderate) · security 5.7/10 · gate PASS-WITH-CONDITIONS
-verified share of live findings: 82%
+confirmed share of live findings: 82% · proven by execution: 14%
 ```
 
-- **Nothing says "confirmed" unless something ran.** Either a generated script
-  exercised your real modules and returned a verdict, or the artefact was re-read
-  from disk at report time and the factual claim re-established. Everything else
-  stays `plausible`, and the report says so next to the finding.
+- **Nothing says "confirmed" unless something ran — and the two ways of running
+  are not the same badge.** A generated script that exercised your real modules and
+  returned a verdict earns `proof-confirmed`. Re-reading the artefact from disk and
+  re-establishing the factual claim earns `pattern-confirmed`: the pattern is real,
+  the exploit is unproven. Everything else stays `plausible`, and the report says
+  so next to the finding.
 - **The confidence number is derived, not authored.** It comes out of the
   verification record. A model cannot set it, and neither can a reviewer.
 - **Zero runtime dependencies.** A tool whose pitch is "your supply chain is the
@@ -95,8 +99,8 @@ the checkout puts `sentinel` on your `PATH` if you want the short command.
 
 | | Consultant-style review (human or LLM) | sentinel-audit |
 |---|---|---|
-| **Finding status** | Asserted. You cannot tell a demonstration from a suspicion | Every finding carries `status` + a `verification` block stating method, checks run, and result |
-| **Exploitability** | "Assessed by code reading" | A generated script runs the real code and returns a verdict; behavioural claims cannot be `confirmed` without one |
+| **Finding status** | Asserted. You cannot tell a demonstration from a suspicion | Every finding carries `status` + a `verification` block stating method, checks run, and result — and a demonstration (`proof-confirmed`) never wears the same badge as a re-matched pattern (`pattern-confirmed`) |
+| **Exploitability** | "Assessed by code reading" | A generated script runs the real code and returns a verdict; behavioural claims cannot reach any confirmed status without one |
 | **Wrong findings** | Quietly dropped, or shipped as real | `refuted`, with the proof that disproved them, kept in the report |
 | **Scanner noise** | Either all of it or none of it | Triaged out with a reason *and* a cited `file:line`. An uncited dismissal is rejected by the pipeline |
 | **Confidence number** | Authored by the reviewer | Derived from the verification record. A model cannot set it |
@@ -108,21 +112,38 @@ the checkout puts `sentinel` on your `PATH` if you want the short command.
 
 ### The verification ladder
 
-A finding earns its status; it is never assigned one.
+A finding earns its status; it is never assigned one. There are two ways for a
+check to agree with a claim, they are worth very different amounts, and they get
+different names — because calling both of them "confirmed" sells the cheap one at
+the price of the expensive one.
 
-- **`confirmed`** — something ran and agreed. Two ways to get here:
-  - `proof-executed` — a generated script exercised your real modules and returned
-    a verdict. **Required** for any claim about *behaviour*.
-  - `static-assertion` — the artefact was re-read from disk at report time,
-    independently of the rule pass, and the factual claim re-established (the
-    construct is at that line; the policy is absent from every file it could live
-    in; the vulnerable version is the one installed). Sufficient for claims *about
-    the code*.
+- **`proof-confirmed`** — a generated script exercised your real modules and
+  returned a `vulnerable` verdict. The behaviour was *demonstrated*. This is the
+  only status that claims exploitability, and it is **required** for any claim
+  about behaviour.
+- **`pattern-confirmed`** — a static or lexical assertion was re-established from
+  disk at report time, independently of the rule pass: the construct *is* at that
+  line, the policy *is* absent from every file it could live in, the vulnerable
+  version *is* the one installed. That makes the **pattern** a verified fact about
+  your code. It does **not** establish that the pattern can be exploited. A
+  behavioural claim can never reach this status — it stays `plausible`.
 - **`plausible`** — reasoned from reading. Honest and still useful, but you should
   confirm it before funding the fix. The schema *forbids* promoting a code-read
-  finding to confirmed, which is why model-proposed findings top out here.
+  finding to either confirmed status, which is why model-proposed findings top out
+  here.
 - **`refuted`** — an executed check disproved it. Kept, with the reason.
 - **`triaged-out`** — suppressed as noise, with a reason and a cited location.
+
+The CLI summary, `REPORT.md`, `REPORT.html`, `CONFIDENCE.md`, SARIF (`precision`
+`very-high` vs `high`) and `findings/*.json` all count the two separately, and the
+derived confidence number is materially lower for a pattern than for a proof.
+
+`verification.state` repeats the precise status inside the verification block;
+`verification.class` folds it back to the coarse `confirmed | plausible | refuted |
+triaged-out` vocabulary, so a consumer that only wants "confirmed vs not" — or one
+written before this split — keeps working unchanged. `findings/index.json` and the
+SARIF run properties carry `proofConfirmed`, `patternConfirmed` **and** their sum as
+`confirmed` for the same reason.
 
 Two asymmetries keep the verdicts honest:
 
@@ -239,7 +260,7 @@ endpoint. Three jobs only:
    pipeline and logged. A model opinion never overturns an executed proof.
 2. **Deep review** — reads the highest-signal files for defects the lexical rules
    cannot see. Proposals are marked `source: llm`, `method: code-read`, and
-   therefore cannot be `confirmed`.
+   therefore cannot reach either confirmed status.
 3. **Fix-plan authoring** — turns recommendations into instructions an agent can
    execute.
 
@@ -362,8 +383,10 @@ Everything Sentinel adds is additive:
 Sentinel validates its own output against this schema on every run, **including the
 semantic invariants**:
 
-- a `confirmed` behavioural finding must carry an executed proof with a
-  `vulnerable` verdict;
+- a `proof-confirmed` finding must carry an executed proof with a `vulnerable`
+  verdict, and a behavioural claim may never be `pattern-confirmed`;
+- `verification.state` must equal `status`, and `verification.class` must be the
+  coarse class of that state — neither can be hand-written into disagreement;
 - a `refuted` finding must have an executed check;
 - a suppression must cite a concrete location;
 - a plan claiming `agentExecutable` must carry an agent prompt.
@@ -377,7 +400,8 @@ Sentinel's own `COVERAGE.md` says this per run; here it is in general:
 
 - **Rules are lexical, not full-AST.** No cross-module data-flow tracking. A
   sanitiser or guard called from another module is not seen by a rule — which is
-  exactly why the proof stage exists, and why unproven findings stay `plausible`.
+  exactly why the proof stage exists, why unproven findings stay `plausible`, and
+  why a re-matched construct is only ever `pattern-confirmed`.
 - **Crypto rules read names and call shapes, not types.** An authenticator held in
   a variable called `value` is invisible; a keyed digest produced in another module
   is not traced. The trade is deliberate — the alternative is a rule that reports

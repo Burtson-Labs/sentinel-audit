@@ -5,6 +5,44 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Honest verification vocabulary (breaking change to `status` values)
+
+A finding whose only verification was re-running a static assertion used to carry
+the same `confirmed` badge as one proven by an executed proof. That oversold the
+cheaper check, so the single value is now two:
+
+- `proof-confirmed` — an executed proof exercised the real code and returned a
+  `vulnerable` verdict. The only status that claims exploitability.
+- `pattern-confirmed` — a static/lexical assertion was re-established from disk.
+  The pattern exists; exploitability is unproven. A *behavioural* claim can never
+  reach this status and stays `plausible`.
+- `plausible`, `refuted` and `triaged-out` are unchanged.
+
+Threaded through every output: the CLI summary, `REPORT.md` (separate sections and
+summary rows), `REPORT.html` (separate stat tiles, filter chips and badges),
+`CONFIDENCE.md` (separate evidence-quality rows plus a new proven-by-execution
+share), SARIF (`precision` `very-high` vs `high`, new `proofConfirmed` /
+`patternConfirmed` run counts, `properties.sentinel.statusClass`) and
+`findings/*.json`.
+
+**Field-meaning notes, so nothing changes silently:**
+
+- `status` now emits `proof-confirmed` / `pattern-confirmed` where it emitted
+  `confirmed`. Consumers matching the literal `"confirmed"` must be updated, or
+  read the new coarse field instead.
+- `verification.state` (new) repeats the precise status inside the verification
+  block; `verification.class` (new) carries the old coarse vocabulary
+  (`confirmed | plausible | refuted | triaged-out`). Validation rejects a finding
+  whose `state`/`class` disagree with `status`.
+- `findings/index.json` and the SARIF run properties keep a `confirmed` count,
+  now defined as the sum of the two confirmed states, and add the split alongside.
+  `findings/index.json` entries gain `statusClass`.
+- `verification.result` and `verification.method` keep their existing meanings.
+- Confidence weighting changed: a `static-assertion` base drops from 0.88 to 0.80,
+  so a pattern-confirmed finding scores materially below a proof-confirmed one
+  instead of within rounding distance of it. In the risk matrix, only
+  proof-confirmed findings are Likelihood High; pattern-confirmed are Medium.
+
 ### Cryptographic-usage rules
 
 - Four rules for the failures that break a signing or verification library, none of which are about an obsolete primitive:

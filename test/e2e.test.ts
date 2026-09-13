@@ -147,13 +147,31 @@ describe('end-to-end scan of a synthetic repository', () => {
     expect(doc.runs[0]!.results[0]!.properties.sentinel.status).toBeTruthy();
   });
 
-  it('finds the token written to web storage and confirms it by re-assertion', () => {
+  it('proof-confirms the token write, because a data-flow proof actually ran', () => {
     const f = byRule('SEC-TOKEN-WEBSTORAGE');
     expect(f).toBeDefined();
-    expect(f!.status).toBe('confirmed');
+    // `authStore.setToken` is loadable outside a bundler, so the harness invokes
+    // it and watches the credential land in storage. That earns the strong label.
+    expect(f!.status).toBe('proof-confirmed');
+    expect(f!.verification.state).toBe('proof-confirmed');
+    expect(f!.verification.class).toBe('confirmed');
+    expect(f!.verification.method).toBe('proof-executed');
+    expect(f!.verification.proof!.verdict).toBe('vulnerable');
     expect(f!.evidence).toContain('src/auth.ts');
-    expect(f!.verification.performed).toBe(true);
   });
+
+  it('falls back to pattern-confirmed when no proof could run — same rule, weaker claim', async () => {
+    const out4 = mkdtempSync(join(tmpdir(), 'sentinel-e2e-out4-'));
+    const noProofs = await scan({ repo, outDir: out4, profile: 'owasp-asvs', formats: ['json'], noLlm: true, offline: true, noProofs: true });
+    const f = noProofs.findings.find((x) => x.ruleId === 'SEC-TOKEN-WEBSTORAGE')!;
+    expect(f.status).toBe('pattern-confirmed');
+    expect(f.verification.class).toBe('confirmed');
+    expect(f.verification.proof).toBeUndefined();
+    // and the weaker claim must cost confidence, not just wording
+    const proven = findings.find((x) => x.ruleId === 'SEC-TOKEN-WEBSTORAGE')!;
+    expect(f.confidence).toBeLessThan(proven.confidence);
+    rmSync(out4, { recursive: true, force: true });
+  }, 120_000);
 
   it('REFUTES the raw-HTML sink by running a proof against the real renderer', () => {
     const f = byRule('SEC-XSS-DANGEROUS-HTML');
@@ -206,7 +224,7 @@ describe('end-to-end scan of a synthetic repository', () => {
   it('confirms the missing CI gates by re-parsing the workflow', () => {
     const f = byRule('CI-NO-SECURITY-GATE');
     expect(f).toBeDefined();
-    expect(f!.status).toBe('confirmed');
+    expect(f!.status).toBe('pattern-confirmed');
     // npm test is present, so the missing gates are the others
     expect(f!.verification.checks.some((c) => c.description.includes('audit'))).toBe(true);
   });
@@ -214,7 +232,7 @@ describe('end-to-end scan of a synthetic repository', () => {
   it('confirms the absent CSP', () => {
     const f = byRule('SEC-CSP-MISSING');
     expect(f).toBeDefined();
-    expect(f!.status).toBe('confirmed');
+    expect(f!.status).toBe('pattern-confirmed');
   });
 
   it('records that advisory data was not collected rather than implying a clean tree', () => {
@@ -222,6 +240,34 @@ describe('end-to-end scan of a synthetic repository', () => {
     expect(f).toBeDefined();
     const coverage = readFileSync(join(out, 'COVERAGE.md'), 'utf8');
     expect(coverage).toMatch(/NOT COVERED/);
+  });
+
+  it('threads the proof/pattern split through every artefact', () => {
+    const md = readFileSync(join(out, 'REPORT.md'), 'utf8');
+    expect(md).toContain('Pattern-confirmed');
+    expect(md).toContain('exploitability is unproven');
+    const conf = readFileSync(join(out, 'CONFIDENCE.md'), 'utf8');
+    expect(conf).toMatch(/Pattern-confirmed \(the construct re-matched/);
+    expect(conf).toMatch(/Proven-by-execution share/);
+    const html = readFileSync(join(out, 'REPORT.html'), 'utf8');
+    expect(html).toContain('data-filter="pattern-confirmed"');
+    expect(html).toContain('data-status="pattern-confirmed"');
+    const sarif = JSON.parse(readFileSync(join(out, 'report.sarif'), 'utf8')) as {
+      runs: Array<{ properties: { sentinel: { counts: Record<string, number> } }; results: Array<{ properties: { sentinel: { status: string; statusClass: string } } }> }>;
+    };
+    const counts = sarif.runs[0]!.properties.sentinel.counts;
+    expect(counts.patternConfirmed + counts.proofConfirmed).toBe(counts.confirmed);
+    const index = JSON.parse(readFileSync(join(out, 'findings/index.json'), 'utf8')) as {
+      counts: { confirmed: number; proofConfirmed: number; patternConfirmed: number };
+      findings: Array<{ status: string; statusClass: string }>;
+    };
+    expect(index.counts.proofConfirmed + index.counts.patternConfirmed).toBe(index.counts.confirmed);
+    // the coarse class travels alongside, so a consumer written against the old
+    // vocabulary keeps working
+    for (const f of index.findings) {
+      if (f.status === 'pattern-confirmed' || f.status === 'proof-confirmed') expect(f.statusClass).toBe('confirmed');
+      else expect(f.statusClass).toBe(f.status);
+    }
   });
 
   it('states in every artefact that the model pass did not run', () => {

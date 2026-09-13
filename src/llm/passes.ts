@@ -1,6 +1,7 @@
 import { join as joinPath } from 'node:path';
 import { excerpt, writeFileEnsured } from '../util/fsx.js';
 import { extractJson, providerFailureReason, type LlmProvider } from './client.js';
+import { scoreConfidence } from '../schema.js';
 import type { Finding, ScanContext } from '../types.js';
 
 /**
@@ -395,7 +396,12 @@ export function applyLlmResults(findings: Finding[], pass: LlmPassResult): { app
     }
     if (d.verdict === 'dismiss') {
       f.status = 'triaged-out';
+      // The status labels are derived, so they have to move together — leaving
+      // `verification.state` on its old value would publish a finding that says
+      // "pattern-confirmed" inside a block headed "triaged-out".
+      f.verification = { ...f.verification, state: 'triaged-out', class: 'triaged-out' };
       f.triage = { suppressed: true, reason: d.reason, evidenceCited: d.evidence, by: 'llm' };
+      f.confidence = scoreConfidence(f);
       applied += 1;
     } else if (d.verdict === 'downgrade') {
       const order: Finding['severity'][] = ['Info', 'Low', 'Medium', 'High', 'Blocker'];

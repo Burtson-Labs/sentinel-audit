@@ -14,7 +14,7 @@ import { buildCoverage } from './report/coverage.js';
 import { renderReport, renderConfidence, renderCoverage } from './report/markdown.js';
 import { renderHtml } from './report/html.js';
 import { buildSarif } from './report/sarif.js';
-import { validateFindings, scoreConfidence } from './schema.js';
+import { validateFindings, scoreConfidence, isConfirmed } from './schema.js';
 import { loadProfile, type Profile } from './profile.js';
 import { ensureDir, writeFileEnsured, exists } from './util/fsx.js';
 import type { ConfidenceAssessment, Finding, ScanContext } from './types.js';
@@ -172,7 +172,12 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
           },
           counts: {
             total: findings.length,
-            confirmed: findings.filter((f) => f.status === 'confirmed').length,
+            // `confirmed` is the coarse sum of the two confirmed states, kept so
+            // a consumer written against the pre-0.2.0 schema still reads a
+            // correct number. The split is the honest view.
+            proofConfirmed: findings.filter((f) => f.status === 'proof-confirmed').length,
+            patternConfirmed: findings.filter((f) => f.status === 'pattern-confirmed').length,
+            confirmed: findings.filter((f) => isConfirmed(f)).length,
             plausible: findings.filter((f) => f.status === 'plausible').length,
             refuted: findings.filter((f) => f.status === 'refuted').length,
             triagedOut: findings.filter((f) => f.status === 'triaged-out').length,
@@ -184,6 +189,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
             title: f.title,
             severity: f.severity,
             status: f.status,
+            statusClass: f.verification.class,
             type: f.type,
             confidence: f.confidence,
             agentExecutable: f.fixPlan.agentExecutable,
@@ -310,6 +316,8 @@ function proposalsToFindings(
         claimType: 'behavioral',
         performed: false,
         result: 'plausible',
+        state: 'plausible',
+        class: 'plausible',
         checks: [
           {
             description: 'model read the file and proposed this defect',

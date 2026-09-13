@@ -1,5 +1,6 @@
 import { ALL_RULES } from '../rules/index.js';
-import type { Finding, ScanContext, Severity } from '../types.js';
+import { isConfirmed, isProofConfirmed, isPatternConfirmed } from '../schema.js';
+import type { Finding, FindingStatus, ScanContext, Severity } from '../types.js';
 
 /**
  * SARIF 2.1.0 output — the automation bridge.
@@ -22,6 +23,14 @@ const LEVEL: Record<Severity, 'error' | 'warning' | 'note' | 'none'> = {
   Medium: 'warning',
   Low: 'note',
   Info: 'note',
+};
+
+const PRECISION: Record<FindingStatus, 'very-high' | 'high' | 'medium' | 'low'> = {
+  'proof-confirmed': 'very-high',
+  'pattern-confirmed': 'high',
+  plausible: 'medium',
+  refuted: 'low',
+  'triaged-out': 'low',
 };
 
 const SECURITY_SEVERITY: Record<Severity, string> = {
@@ -62,7 +71,10 @@ export function buildSarif(ctx: ScanContext, findings: Finding[], options: Sarif
           ]),
         ],
         'security-severity': SECURITY_SEVERITY[sample.severity],
-        precision: sample.status === 'confirmed' ? 'very-high' : sample.status === 'refuted' ? 'low' : 'medium',
+        // `precision` is SARIF's vocabulary for the same distinction: a proof
+        // that ran is very-high, a re-matched pattern is high (the construct is
+        // real, the consequence unproven), a refutation is low.
+        precision: PRECISION[sample.status],
       },
     };
   });
@@ -105,6 +117,8 @@ export function buildSarif(ctx: ScanContext, findings: Finding[], options: Sarif
           sentinel: {
             findingId: f.id,
             status: f.status,
+            /** The pre-0.2.0 coarse vocabulary, for consumers filtering on it. */
+            statusClass: f.verification.class,
             severity: f.severity,
             confidence: f.confidence,
             claimType: f.verification.claimType,
@@ -165,7 +179,9 @@ export function buildSarif(ctx: ScanContext, findings: Finding[], options: Sarif
             profile: ctx.profileId,
             llmPass: ctx.llm.available ? 'ran' : 'not-run',
             counts: {
-              confirmed: findings.filter((f) => f.status === 'confirmed').length,
+              proofConfirmed: findings.filter((f) => isProofConfirmed(f)).length,
+              patternConfirmed: findings.filter((f) => isPatternConfirmed(f)).length,
+              confirmed: findings.filter((f) => isConfirmed(f)).length,
               plausible: findings.filter((f) => f.status === 'plausible').length,
               refuted: findings.filter((f) => f.status === 'refuted').length,
               triagedOut: findings.filter((f) => f.status === 'triaged-out').length,
@@ -179,17 +195,20 @@ export function buildSarif(ctx: ScanContext, findings: Finding[], options: Sarif
   return `${JSON.stringify(doc, null, 2)}\n`;
 }
 
+const TAG: Record<FindingStatus, string> = {
+  'proof-confirmed': 'PROOF-CONFIRMED',
+  'pattern-confirmed': 'PATTERN-CONFIRMED',
+  plausible: 'PLAUSIBLE',
+  refuted: 'REFUTED',
+  'triaged-out': 'TRIAGED OUT',
+};
+
 function sarifMessage(f: Finding): string {
-  const tag =
-    f.status === 'confirmed'
-      ? 'CONFIRMED'
-      : f.status === 'refuted'
-        ? 'REFUTED'
-        : f.status === 'triaged-out'
-          ? 'TRIAGED OUT'
-          : 'PLAUSIBLE';
   const proof = f.verification.proof ? ` Proof: ${f.verification.proof.command} → ${f.verification.proof.verdict}.` : '';
-  return `[${tag}] ${f.title}. ${f.evidence} — ${f.verification.notes}${proof}`;
+  const caveat = isPatternConfirmed(f)
+    ? ' The pattern was re-matched on disk; exploitability is unproven.'
+    : '';
+  return `[${TAG[f.status]}] ${f.title}. ${f.evidence} — ${f.verification.notes}${caveat}${proof}`;
 }
 
 function toPascal(id: string): string {

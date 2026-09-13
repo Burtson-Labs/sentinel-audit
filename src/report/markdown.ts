@@ -2,6 +2,7 @@ import type { ConfidenceAssessment, Finding, ScanContext, Severity } from '../ty
 import type { Profile } from '../profile.js';
 import type { CoverageReport } from './coverage.js';
 import { band } from './confidence.js';
+import { isConfirmed, isPatternConfirmed, isProofConfirmed } from '../schema.js';
 
 /**
  * Markdown renderers. Three documents, matching what a reader of a
@@ -10,7 +11,8 @@ import { band } from './confidence.js';
  */
 
 const STATUS_MARK: Record<Finding['status'], string> = {
-  confirmed: 'CONFIRMED',
+  'proof-confirmed': 'PROOF-CONFIRMED',
+  'pattern-confirmed': 'PATTERN-CONFIRMED',
   plausible: 'PLAUSIBLE',
   refuted: 'REFUTED',
   'triaged-out': 'TRIAGED OUT',
@@ -20,6 +22,8 @@ const SEVERITY_ORDER: Severity[] = ['Blocker', 'High', 'Medium', 'Low', 'Info'];
 
 export function renderReport(ctx: ScanContext, findings: Finding[], profile: Profile, confidence: ConfidenceAssessment): string {
   const live = findings.filter((f) => f.status !== 'refuted' && f.status !== 'triaged-out');
+  const proofConfirmed = findings.filter((f) => isProofConfirmed(f));
+  const patternConfirmed = findings.filter((f) => isPatternConfirmed(f));
   const refuted = findings.filter((f) => f.status === 'refuted');
   const triaged = findings.filter((f) => f.status === 'triaged-out');
   const out: string[] = [];
@@ -33,11 +37,12 @@ export function renderReport(ctx: ScanContext, findings: Finding[], profile: Pro
   // ---- the headline table ------------------------------------------------
   out.push('## Verification summary');
   out.push('');
-  out.push('Every finding below carries a verification record. A finding is only **confirmed** when something ran and agreed with it: an executed proof script for a claim about behaviour, or a re-assertion of the artefact from disk for a claim about the code. Findings that did not survive checking are kept as **refuted** rather than deleted.');
+  out.push('Every finding below carries a verification record, and the two ways a check can agree are reported separately on purpose. **Proof-confirmed** means a generated script ran against the real code and demonstrated the behaviour. **Pattern-confirmed** means the construct was re-read from disk and re-matched — the pattern is really there, but nothing showed it being exploited. Findings that did not survive checking are kept as **refuted** rather than deleted.');
   out.push('');
   out.push('| Status | Count | What it means |');
   out.push('|---|---:|---|');
-  out.push(`| Confirmed | ${findings.filter((f) => f.status === 'confirmed').length} | an executed check agreed with the claim |`);
+  out.push(`| Proof-confirmed | ${proofConfirmed.length} | an executed proof exercised the real code and demonstrated the behaviour |`);
+  out.push(`| Pattern-confirmed | ${patternConfirmed.length} | a static assertion re-matched: the pattern exists, exploitability is unproven |`);
   out.push(`| Plausible | ${findings.filter((f) => f.status === 'plausible').length} | reasoned from the code; no executed check established it |`);
   out.push(`| Refuted | ${refuted.length} | an executed check disproved the claim — listed, not hidden |`);
   out.push(`| Triaged out | ${triaged.length} | dismissed as noise, with the reason and a cited location |`);
@@ -81,6 +86,8 @@ export function renderReport(ctx: ScanContext, findings: Finding[], profile: Pro
   out.push('');
   out.push('**Verification method** — `proof-executed`: a generated script exercised the real code. `static-assertion`: the artefact was re-read from disk and the claim re-established. `tool-output`: a third-party scanner reported it. `code-read`: reasoning only.');
   out.push('');
+  out.push('**Status** — `proof-confirmed`: an executed proof demonstrated the behaviour. `pattern-confirmed`: the construct re-matched on disk, so the pattern exists but exploitability is unproven. `plausible`: reasoned only. `refuted`: an executed check disproved it. `triaged-out`: dismissed as noise, with a reason.');
+  out.push('');
 
   // ---- findings ----------------------------------------------------------
   out.push('---');
@@ -88,14 +95,25 @@ export function renderReport(ctx: ScanContext, findings: Finding[], profile: Pro
   out.push('# Findings');
   out.push('');
 
-  const groups: Array<{ title: string; items: Finding[] }> = [
-    { title: 'Confirmed', items: findings.filter((f) => f.status === 'confirmed').sort(bySeverity) },
-    { title: 'Plausible (unproven)', items: findings.filter((f) => f.status === 'plausible').sort(bySeverity) },
+  const groups: Array<{ title: string; blurb: string; items: Finding[] }> = [
+    {
+      title: 'Proof-confirmed',
+      blurb: 'An executed proof script exercised the real code and demonstrated the behaviour. The script is saved under `proofs/` and can be re-run unchanged.',
+      items: proofConfirmed.sort(bySeverity),
+    },
+    {
+      title: 'Pattern-confirmed',
+      blurb: 'The cited construct was re-read from disk at report time and re-matched, independently of the rule pass. That makes the *pattern* a fact about this code; it does not make the consequence a fact. Confirm exploitability before budgeting a large remediation.',
+      items: patternConfirmed.sort(bySeverity),
+    },
+    { title: 'Plausible (unproven)', blurb: 'Reasoned from the code. No executed check established these.', items: findings.filter((f) => f.status === 'plausible').sort(bySeverity) },
   ];
 
   for (const group of groups) {
     if (group.items.length === 0) continue;
     out.push(`## ${group.title} — ${group.items.length}`);
+    out.push('');
+    out.push(group.blurb);
     out.push('');
     for (const f of group.items) out.push(renderFinding(f));
   }
@@ -131,12 +149,12 @@ export function renderReport(ctx: ScanContext, findings: Finding[], profile: Pro
   out.push('# Merge blockers');
   out.push('');
   const blockers = live
-    .filter((f) => profile.gate.blockOn.includes(f.severity) || (f.severity === 'High' && f.status === 'confirmed'))
+    .filter((f) => profile.gate.blockOn.includes(f.severity) || (f.severity === 'High' && isConfirmed(f)))
     .sort(bySeverity);
   if (blockers.length === 0) {
     out.push('None. No finding at a blocking severity survived verification, and no high-severity finding was confirmed by an executed check.');
     out.push('');
-    const unprovenHigh = live.filter((f) => f.severity === 'High' && f.status !== 'confirmed');
+    const unprovenHigh = live.filter((f) => f.severity === 'High' && !isConfirmed(f));
     if (unprovenHigh.length > 0) {
       out.push(`${unprovenHigh.length} high-severity finding(s) are reported as unproven (${unprovenHigh.map((f) => f.id).join(', ')}). Confirm them before treating them as blockers or as non-issues.`);
       out.push('');
@@ -347,11 +365,15 @@ export function renderConfidence(ctx: ScanContext, c: ConfidenceAssessment, prof
   out.push('');
   out.push('| | Count |');
   out.push('|---|---:|');
-  out.push(`| Confirmed by an executed check | ${c.evidenceQuality.confirmed} |`);
+  out.push(`| Proof-confirmed (an executed proof demonstrated it) | ${c.evidenceQuality.proofConfirmed} |`);
+  out.push(`| Pattern-confirmed (the construct re-matched; exploitability unproven) | ${c.evidenceQuality.patternConfirmed} |`);
   out.push(`| Plausible (reasoned, unproven) | ${c.evidenceQuality.plausible} |`);
   out.push(`| Refuted by an executed check | ${c.evidenceQuality.refuted} |`);
   out.push(`| Triaged out as noise | ${c.evidenceQuality.triagedOut} |`);
-  out.push(`| **Verified share of live findings** | **${Math.round(c.evidenceQuality.verifiedShare * 100)}%** |`);
+  out.push(`| **Confirmed share of live findings** | **${Math.round(c.evidenceQuality.verifiedShare * 100)}%** |`);
+  out.push(`| **Proven-by-execution share of live findings** | **${Math.round(c.evidenceQuality.provenShare * 100)}%** |`);
+  out.push('');
+  out.push('The two confirmed rows are not interchangeable. A pattern-confirmed finding is a verified fact about the source — the construct is at that line, re-read from disk at report time. It is *not* a demonstration that the construct can be exploited, and a report that called both "confirmed" would be selling the cheaper check at the price of the expensive one.');
   out.push('');
 
   out.push('### Why not lower');
