@@ -241,6 +241,21 @@ describe('SEC-WEAK-CRYPTO', () => {
     expect(hits[0]!.meta?.csprngFallback).toBe(true);
     expect(ruleById('SEC-WEAK-CRYPTO')!.severityFor!(hits)).toBe('Low');
   });
+
+  /** A finding whose own evidence says the code is correct must not ask the reader to act. */
+  it('triages itself out when every site is a CSPRNG fallback branch', () => {
+    const rule = ruleById('SEC-WEAK-CRYPTO')!;
+    const fallback = { ruleId: rule.id, file: 'src/a.ts', line: 3, excerpt: 'x', message: 'm', meta: { kind: 'prng', csprngFallback: true } };
+    expect(rule.triageFor!([fallback])?.reason).toMatch(/fallback branch of a CSPRNG check/);
+    // one real site, and the finding stands
+    const real = { ruleId: rule.id, file: 'src/b.ts', line: 9, excerpt: 'x', message: 'm', meta: { kind: 'prng' } };
+    expect(rule.triageFor!([fallback, real])).toBeUndefined();
+    // an observability id is a different claim, not a dismissal
+    const trace = { ruleId: rule.id, file: 'src/c.ts', line: 2, excerpt: 'x', message: 'm', meta: { kind: 'prng', observabilityOnly: true } };
+    expect(rule.triageFor!([trace])).toBeUndefined();
+    // md5 is never dismissed by this path
+    expect(rule.triageFor!([{ ...fallback, meta: { kind: 'hash' } }])).toBeUndefined();
+  });
 });
 
 describe('SEC-TIMING-UNSAFE-COMPARE', () => {

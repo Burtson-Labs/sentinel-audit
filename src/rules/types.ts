@@ -69,6 +69,17 @@ export interface Rule {
    * believing the column.
    */
   severityFor?: (hits: RuleHit[]) => Severity;
+  /**
+   * Dismiss the rule's own finding, with a reason, when the hits it collected
+   * turn out to describe correct code.
+   *
+   * Returning a reason triages the finding out rather than dropping it: the
+   * evidence and the dismissal both stay in the report, so a reader can disagree.
+   * That is the distinction worth keeping — a rule that silently stops reporting
+   * a construct cannot be audited, and a rule that reports a construct its own
+   * evidence string calls correct cannot be trusted.
+   */
+  triageFor?: (hits: RuleHit[]) => { reason: string } | undefined;
   fixPlan: (hits: RuleHit[], ctx: RuleRepoContext) => RuleFixPlanSeed;
 }
 

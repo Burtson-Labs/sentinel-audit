@@ -255,6 +255,10 @@ function candidatesFromRules(ctx: ScanContext): CandidateFinding[] {
     // Put the most consequential sites first so the evidence string leads with
     // them rather than with whatever the directory walk happened to reach first.
     const ranked = [...useHits].sort((a, b) => hitWeight(b) - hitWeight(a));
+    // A rule may dismiss its own finding once it has seen all the hits together
+    // — the case a per-hit matcher cannot decide. Test-only triage wins, because
+    // it is the stronger statement about where the code lives.
+    const selfTriage = testOnlyFinding ? undefined : rule.triageFor?.(ranked);
     const cap = rule.maxEvidence ?? 6;
     const shown = ranked.slice(0, cap);
     const evidence = `${shown.map((h) => `${h.file}:${h.line} — ${h.message}`).join('; ')}${
@@ -286,7 +290,14 @@ function candidatesFromRules(ctx: ScanContext): CandidateFinding[] {
             evidenceCited: `${testOnly[0]!.file}:${testOnly[0]!.line}`,
             by: 'heuristic',
           }
-        : undefined,
+        : selfTriage
+          ? {
+              suppressed: true,
+              reason: selfTriage.reason,
+              evidenceCited: `${ranked[0]!.file}:${ranked[0]!.line}`,
+              by: 'heuristic',
+            }
+          : undefined,
       notes:
         prod.length > 0 && testOnly.length > 0
           ? [`${testOnly.length} further match(es) in test paths were excluded from the evidence as deliberate test constructs.`]

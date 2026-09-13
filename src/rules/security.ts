@@ -656,6 +656,19 @@ export const weakCryptoRule: Rule = {
     const benign = hits.every((h) => h.meta?.observabilityOnly === true || h.meta?.csprngFallback === true);
     return benign ? 'Low' : 'Medium';
   },
+  // The rule's own evidence string already said it: "Math.random() appears only
+  // as the fallback branch where a CSPRNG is unavailable (primary path uses
+  // getRandomValues/randomUUID)". Reporting that as a weak-crypto finding asks
+  // the reader to act on a line the finding itself describes as correct. It is
+  // triaged out rather than dropped, so the dismissal stays reviewable — and only
+  // when *every* site is such a branch.
+  triageFor: (hits) =>
+    hits.every((h) => h.meta?.csprngFallback === true)
+      ? {
+          reason:
+            'every site is the fallback branch of a CSPRNG check — the primary path uses crypto.getRandomValues/randomUUID and Math.random() only runs where no CSPRNG exists. There is nothing to change: removing the branch would break the environments it exists for.',
+        }
+      : undefined,
   fixPlan: (hits) => {
     // When every hit is a documented CSPRNG fallback or an observability id,
     // there is no mechanical change to make — the primary path is already
