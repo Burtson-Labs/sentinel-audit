@@ -3,6 +3,7 @@ import { maskSource } from '../src/util/lex.js';
 import { ALL_RULES, ruleById, isVendoredArtifact } from '../src/rules/index.js';
 import { classifyOperand, negativePredicateName, sameFieldComparison, wordTokens } from '../src/rules/crypto.js';
 import { declaresHeader, isEdgeConfigPath, SECURITY_HEADERS, surveyCsp, surveyEdgeConfig } from '../src/util/edge.js';
+import { inSortComparator } from '../src/rules/security.js';
 import { isPolicyDeclaration } from '../src/verify/index.js';
 import type { RuleFileContext, RuleRepoContext } from '../src/rules/types.js';
 import type { RepoFile } from '../src/util/fsx.js';
@@ -755,6 +756,56 @@ describe('SEC-POSTMESSAGE-ORIGIN', () => {
   it('flags a wildcard target origin', () => {
     const hits = scan('SEC-POSTMESSAGE-ORIGIN', 'src/a.ts', "frame.postMessage(payload, '*');\n");
     expect(hits.some((h) => h.meta?.kind === 'send')).toBe(true);
+  });
+});
+
+/**
+ * Regression suite for four wrong findings in a chat application: `role` there
+ * names the author of a message, and one of the four was a sort comparator.
+ */
+describe('SEC-CLIENT-SIDE-AUTHZ', () => {
+  it('still reports a real authorisation role check', () => {
+    const hits = scan('SEC-CLIENT-SIDE-AUTHZ', 'src/Nav.tsx', "if (user.role === 'admin') return <AdminPanel />;\n");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.meta?.predicate).toBe('role===');
+  });
+
+  it('still reports the permission and capability predicates', () => {
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/a.tsx', 'if (isAdmin) showDangerZone();\n')).toHaveLength(1);
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/a.tsx', "if (permissions.includes('billing:write')) enable();\n")).toHaveLength(1);
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/a.tsx', "if (user.role === 'owner' || hasRole('editor')) edit();\n")).toHaveLength(1);
+  });
+
+  it('does not report a chat message-author role', () => {
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/hooks/useConversation.ts', "if (role === 'assistant' && typeof content === 'string') render(content);\n")).toHaveLength(0);
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/hooks/useConversation.ts', "if (role === 'user' && typeof content === 'string') render(content);\n")).toHaveLength(0);
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/local/turnLog.ts', "if (ev.role === 'user' || ev.role === 'assistant') push(ev);\n")).toHaveLength(0);
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/a.ts', "if (m.role === 'system') return null;\nif (m.role === 'tool') return toolView(m);\n")).toHaveLength(0);
+  });
+
+  it('keeps firing when an authorisation role shares the line with a chat role', () => {
+    const hits = scan('SEC-CLIENT-SIDE-AUTHZ', 'src/a.tsx', "if (user.role === 'admin' && message.role === 'user') allow();\n");
+    expect(hits).toHaveLength(1);
+  });
+
+  it('does not report a sort comparator', () => {
+    const src = [
+      'keys.sort((a, b) => {',
+      '  if (!!a.isAdmin !== !!b.isAdmin) return a.isAdmin ? -1 : 1;',
+      '  return (b.credits ?? 0) - (a.credits ?? 0);',
+      '});',
+      '',
+    ].join('\n');
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/services/auth/resolveKeySession.ts', src)).toHaveLength(0);
+  });
+
+  it('requires all three comparator signals before excusing a predicate', () => {
+    // a sort call nearby is not on its own enough to excuse a real guard
+    const src = ['items.sort((x, y) => x.name.localeCompare(y.name));', "if (user.isAdmin) showDangerZone();", ''].join('\n');
+    expect(scan('SEC-CLIENT-SIDE-AUTHZ', 'src/a.tsx', src)).toHaveLength(1);
+    expect(inSortComparator('list.sort((a, b) => {', 'return a.isAdmin ? -1 : 1;')).toBe(true);
+    expect(inSortComparator('list.map((a) => {', 'return a.isAdmin ? -1 : 1;')).toBe(false);
+    expect(inSortComparator('list.sort((a, b) => {', 'return user.isAdmin;')).toBe(false);
   });
 });
 

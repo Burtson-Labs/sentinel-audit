@@ -244,6 +244,52 @@ export const tokenWebStorageRule: Rule = {
   }),
 };
 
+/**
+ * Message-author roles, not authorisation roles.
+ *
+ * In an LLM application `role` is the field that says who wrote a message —
+ * `'user'`, `'assistant'`, `'system'` — and `if (role === 'assistant')` is a
+ * rendering branch. Reported as "Authorisation decision made from client-held
+ * claims" it is wrong about the field, wrong about the consequence, and arrives
+ * next to genuine findings at the same severity.
+ *
+ * The list is deliberately short: these seven words are the message-role
+ * vocabulary of the major chat APIs, and none of them is ever an authorisation
+ * role. `'admin'`, `'owner'`, `'editor'`, `'viewer'` are absent on purpose —
+ * those are the comparisons this rule exists to report.
+ */
+const CHAT_ROLE_VALUES = new Set(['user', 'assistant', 'system', 'tool', 'model', 'developer', 'function']);
+/** The *first* role comparison in the matched region, so a line that checks both keeps firing. */
+const FIRST_ROLE_COMPARISON = /\brole\s*(?:===|==|!==|!=)\s*['"`]([A-Za-z_-]*)['"`]/;
+
+function comparesChatRole(region: string): boolean {
+  const compared = FIRST_ROLE_COMPARISON.exec(region);
+  return compared !== null && CHAT_ROLE_VALUES.has(compared[1]!.toLowerCase());
+}
+
+/**
+ * Is this predicate inside a sort comparator?
+ *
+ * `keys.sort((a, b) => (a.isAdmin ? -1 : 1))` orders a list the user already
+ * holds. Nothing is permitted or denied by the result, so it is not an
+ * authorisation decision in any sense — and it was reported as one.
+ *
+ * Three signals are required together, because any one alone is too easily
+ * coincidental: a sort/compare call before the match, a two-parameter arrow
+ * between it and the match, and a reference to one of *those two parameters* in
+ * the predicate itself.
+ */
+const SORT_SIGNAL = /\.\s*sort\s*\(|\btoSorted\s*\(|\bcompare(?:Fn|Function|ator)?\s*[=:(]|localeCompare/;
+const COMPARATOR_PARAMS = /\(\s*([A-Za-z_$][\w$]*)\s*(?::[^,)\n]+)?,\s*([A-Za-z_$][\w$]*)\s*(?::[^,)\n]+)?\)\s*(?::[^=\n]+)?=>/g;
+
+export function inSortComparator(before: string, region: string): boolean {
+  if (!SORT_SIGNAL.test(before)) return false;
+  const params = [...before.matchAll(COMPARATOR_PARAMS)].pop();
+  if (!params) return false;
+  const [, left, right] = params;
+  return new RegExp(`\\b(?:${left}|${right})\\s*[.?[]`).test(region);
+}
+
 export const clientSideAuthzRule: Rule = {
   id: 'SEC-CLIENT-SIDE-AUTHZ',
   title: 'Authorisation decision made from client-held claims',
@@ -265,8 +311,17 @@ export const clientSideAuthzRule: Rule = {
   appliesTo: JS_TS,
   scan: (ctx) => {
     const hits: RuleHit[] = [];
-    const re = /\b(?:if|&&|\?|return)\s*\(?\s*[\w.?]*\b(?:isAdmin|hasRole|hasPermission|canEdit|canDelete|isOwner|role\s*===|roles\.includes|permissions\.includes|claims\.|scopes\.includes)/g;
+    // The alternative is captured so the exclusions below can tell *which*
+    // predicate matched: a chat-role literal only excuses a `role ===` match, not
+    // an `isAdmin` one that happens to share the line.
+    const re = /\b(?:if|&&|\?|return)\s*\(?\s*[\w.?]*\b(isAdmin|hasRole|hasPermission|canEdit|canDelete|isOwner|role\s*===|roles\.includes|permissions\.includes|claims\.|scopes\.includes)/g;
     for (const m of matchCode(ctx.src, ctx.masked, re)) {
+      // Read the raw source at the same offset: masking blanks string bodies, and
+      // the literal being compared is the whole question here.
+      const rest = ctx.src.slice(m.index, m.index + 160);
+      const before = ctx.src.slice(Math.max(0, m.index - 300), m.index);
+      if (m.match[1]!.startsWith('role') && comparesChatRole(rest)) continue;
+      if (inSortComparator(before, rest)) continue;
       hits.push(
         hit(
           clientSideAuthzRule.id,
@@ -274,7 +329,7 @@ export const clientSideAuthzRule: Rule = {
           m.line,
           excerpt(m.lineText),
           'client-side role/permission predicate used in a control-flow decision',
-          { inTest: ctx.isTest },
+          { predicate: m.match[1]!.replace(/\s+/g, ''), inTest: ctx.isTest },
         ),
       );
     }
