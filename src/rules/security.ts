@@ -1,5 +1,6 @@
 import { matchCode, windowAfter } from '../util/lex.js';
 import { excerpt } from '../util/fsx.js';
+import { publishableKeyMatch } from '../collectors/secrets.js';
 import type { RuleHit } from '../types.js';
 import { hit, JS_TS, type Rule, type RuleFileContext } from './types.js';
 
@@ -822,9 +823,20 @@ export const secretInClientBundleRule: Rule = {
       // that means a real credential: `VITE_SENTRY_AUTH_TOKEN` uploads source maps
       // and is emphatically not publishable.
       const nameSuffixBenign = /_(?:PUBLIC_KEY|PUBLISHABLE_KEY|CLIENT_ID|SITE_KEY|ANON_KEY)$/.test(name);
-      const providerBenign =
-        PUBLISHABLE_PROVIDER.test(name) && !/(?:SECRET|PRIVATE|AUTH_TOKEN|ADMIN|PASSWORD|PASSWD|SERVICE_ACCOUNT|MASTER)/.test(name);
-      const benign = nameSuffixBenign || providerBenign;
+      const namesRealCredential = /(?:SECRET|PRIVATE|AUTH_TOKEN|ADMIN|PASSWORD|PASSWD|SERVICE_ACCOUNT|MASTER)/.test(name);
+      const providerBenign = PUBLISHABLE_PROVIDER.test(name) && !namesRealCredential;
+      // Classify the *value* with the same allowlist the secret collector uses,
+      // taking the literal from the line or from the identifier's declaration
+      // elsewhere in the module. `const PUBLIC_PROJECT_TOKEN = 'phc_…'` is a
+      // PostHog project key: the name says nothing useful, the value settles it,
+      // and the flagged occurrence is often a *reference* rather than the
+      // declaration.
+      const literal = /['"`]([^'"`\n]{8,200})['"`]/.exec(m.lineText)?.[1] ?? declaredLiteral(ctx.src, name);
+      const valueBenign =
+        literal !== undefined &&
+        !namesRealCredential &&
+        publishableKeyMatch({ value: literal, assignedTo: name, lineText: m.lineText }) !== undefined;
+      const benign = nameSuffixBenign || providerBenign || valueBenign;
       hits.push(
         hit(
           secretInClientBundleRule.id,
@@ -832,7 +844,7 @@ export const secretInClientBundleRule: Rule = {
           m.line,
           excerpt(m.lineText.replace(/=.*/, '=<value redacted>')),
           `client-inlined build variable with a credential-shaped name: ${name}${
-            providerBenign
+            providerBenign || valueBenign
               ? ' — publishable by design: this provider\'s client key is meant to ship in the bundle, so it is reported at Info for confirmation rather than as an exposure'
               : benign
                 ? ' (name suggests a publishable value — confirm)'
@@ -854,6 +866,16 @@ export const secretInClientBundleRule: Rule = {
     notAgentExecutableReason: 'Whether a value is publishable is product knowledge, and rotation happens outside the repository.',
   }),
 };
+
+/**
+ * The string literal `name` is declared with in this module, if any. Used so a
+ * *reference* to a publishable constant is classified the same way as its
+ * declaration — the rule usually flags the reference.
+ */
+export function declaredLiteral(src: string, name: string): string | undefined {
+  const re = new RegExp(`(?:const|let|var|readonly)\\s+${name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\s*(?::[^=]*)?=\\s*['"\`]([^'"\`\\n]{8,200})['"\`]`);
+  return re.exec(src)?.[1];
+}
 
 export const httpEndpointRule: Rule = {
   id: 'SEC-HTTP-ENDPOINT',

@@ -303,6 +303,32 @@ describe('publishable build variables in the client bundle rule', () => {
     expect(severityOf(hits)).toBe('Info');
   });
 
+  it('classifies by the value when the literal is on the line, not only by the name', () => {
+    // verbatim shape from frontend/src/utils/analytics.ts: the name says nothing
+    // useful, the `phc_` literal settles it
+    const hits = scanFile(
+      'frontend/src/utils/analytics.ts',
+      [
+        "const PUBLIC_PROJECT_TOKEN = 'phc_1aVTBknGsk01feeKT0Ooi4Jqf0K8rZqgLVuvmFzD3Gcp';",
+        'const token = (import.meta.env?.VITE_POSTHOG_KEY as string) || PUBLIC_PROJECT_TOKEN;',
+        '',
+      ].join('\n'),
+    );
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.meta!.benign === true)).toBe(true);
+    expect(severityOf(hits)).toBe('Info');
+  });
+
+  it('does not let a publishable-looking value excuse a credential-named variable', () => {
+    const hits = scanFile(
+      'src/env.ts',
+      "const k = (import.meta.env.VITE_STRIPE_SECRET_KEY as string) || 'pk_live_A1b2C3d4A1b2C3d4A1b2C3d4';\n",
+    );
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.meta!.benign).toBe(false);
+    expect(severityOf(hits)).toBe('High');
+  });
+
   it('keeps High for a real credential in a public-prefixed variable', () => {
     for (const name of ['VITE_OPENAI_API_KEY', 'NEXT_PUBLIC_DB_PASSWORD', 'VITE_ADMIN_TOKEN']) {
       const hits = scanFile('src/env.ts', `const v = import.meta.env.${name} as string;\n`);
