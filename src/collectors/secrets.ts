@@ -4,7 +4,7 @@ import { maskSecret, shannonEntropy } from '../util/hash.js';
 import { maskSource } from '../util/lex.js';
 import { commandExists, run } from '../util/exec.js';
 import { isTestOrFixturePath } from '../util/testpaths.js';
-import type { CollectorRun, SecretCandidate, SecretResult } from '../types.js';
+import type { CollectorRun, ExternalScannerHit, SecretCandidate, SecretResult } from '../types.js';
 
 /**
  * Secret scanning: high-precision provider patterns first, generic
@@ -228,12 +228,14 @@ export function collectSecrets(
     scanText(f.path, text, candidates, { gitignored: options.gitignored, isTest: options.isTest });
   }
 
-  const external = probeExternalScanner(root, options.useExternalScanner ?? true);
+  const external = probeExternalScanner(root, options.useExternalScanner ?? true, { isTest: options.isTest });
   // Only one of these two statements can be true, and the coverage report must
   // not print both: either a history-aware scanner ran, or it did not.
   if (external.available) {
     notExamined.push(
-      `individual ${external.name} results are not re-derived as Sentinel findings — it reported ${external.findings}, and the tool should be run directly for the details`,
+      external.hitsParsed === true
+        ? `${external.name} results are relayed and triaged, not re-detected — Sentinel did not re-derive the ${external.findings} match(es) from the file contents, so run the tool directly for the full detail`
+        : `individual ${external.name} results are not re-derived as Sentinel findings — it reported ${external.findings}, and the tool should be run directly for the details`,
     );
   } else {
     notExamined.push(
@@ -462,7 +464,11 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
   return { suppress: false, reason: '' };
 }
 
-function probeExternalScanner(root: string, enabled: boolean): SecretResult['externalScanner'] {
+function probeExternalScanner(
+  root: string,
+  enabled: boolean,
+  options: { isTest?: (p: string) => boolean } = {},
+): SecretResult['externalScanner'] {
   if (!enabled) {
     return { name: 'gitleaks|trufflehog', available: false, findings: 0, note: 'external scanners disabled for this run' };
   }
@@ -472,21 +478,27 @@ function probeExternalScanner(root: string, enabled: boolean): SecretResult['ext
       timeoutMs: 180_000,
     });
     const findings = countJsonArray(res.stdout);
+    const parsed = parseGitleaks(res.stdout, options);
     return {
       name: 'gitleaks',
       available: true,
       findings,
-      note: `gitleaks detect over the working tree and git history reported ${findings} finding(s); exit ${res.code}`,
+      hits: parsed.hits,
+      hitsParsed: parsed.ok,
+      note: `gitleaks detect over the working tree and git history reported ${findings} finding(s); exit ${res.code}${triageSummary(parsed)}`,
     };
   }
   if (commandExists('trufflehog')) {
     const res = run('trufflehog', ['filesystem', root, '--json', '--no-update'], { cwd: root, timeoutMs: 180_000 });
     const findings = res.stdout.split('\n').filter((l) => l.trim().startsWith('{')).length;
+    const parsed = parseTrufflehog(res.stdout, root, options);
     return {
       name: 'trufflehog',
       available: true,
       findings,
-      note: `trufflehog filesystem scan reported ${findings} result line(s); exit ${res.code}`,
+      hits: parsed.hits,
+      hitsParsed: parsed.ok,
+      note: `trufflehog filesystem scan reported ${findings} result line(s); exit ${res.code}${triageSummary(parsed)}`,
     };
   }
   return {
@@ -495,6 +507,171 @@ function probeExternalScanner(root: string, enabled: boolean): SecretResult['ext
     findings: 0,
     note: 'neither gitleaks nor trufflehog is on PATH — Sentinel used its built-in regex + entropy scanner only, which does not cover git history',
   };
+}
+
+// ---------------------------------------------------------------------------
+// relaying another scanner's results through Sentinel's triage
+// ---------------------------------------------------------------------------
+
+/**
+ * Which of another scanner's rules are generic keyword/entropy matches.
+ *
+ * It decides whether the identifier-shape, test-path and entropy dismissals may
+ * apply: they may for a generic match, exactly as they do for Sentinel's own
+ * generic rule, and they may not for a provider pattern — `ghp_…` in a fixture
+ * is still a GitHub token, which is why `precise` exists in the first place.
+ */
+const GENERIC_EXTERNAL_RULE = /generic|entropy|keyword/i;
+
+export interface ParsedExternalHits {
+  /** Did the output parse? `false` means the count cannot be triaged at all. */
+  ok: boolean;
+  hits: ExternalScannerHit[];
+}
+
+function triageSummary(parsed: ParsedExternalHits): string {
+  if (!parsed.ok) return '; its individual results could not be parsed, so Sentinel relayed the count without triaging it';
+  const dismissed = parsed.hits.filter((h) => h.likelyFalsePositive).length;
+  const inTests = parsed.hits.filter((h) => !h.likelyFalsePositive && h.inTestPath).length;
+  const live = parsed.hits.length - dismissed - inTests;
+  return `; Sentinel triaged them: ${live} credential-shaped value(s) remaining, ${inTests} in test/fixture paths, ${dismissed} dismissed as non-credentials`;
+}
+
+/**
+ * Triage one relayed result with the same rules Sentinel applies to its own
+ * matches, so a single report cannot call the same fixture Info in one finding
+ * and High in another.
+ */
+export function triageExternalHit(
+  input: { ruleId: string; description: string; value: string; lineText?: string; path: string; line: number; commit?: string },
+  options: { isTest?: (p: string) => boolean } = {},
+): ExternalScannerHit {
+  const { isTest = isTestOrFixturePath } = options;
+  const lineText = input.lineText ?? input.value;
+  const precise = !GENERIC_EXTERNAL_RULE.test(input.ruleId);
+  const rule: SecretRule = {
+    id: input.ruleId,
+    description: input.description,
+    // Never executed: the other scanner already matched. Present because triage
+    // reads `precise`/`minEntropy` off the rule it is triaging for.
+    re: /(?!)/g,
+    group: 1,
+    minEntropy: precise ? undefined : 3.3,
+    precise,
+  };
+  const entropy = shannonEntropy(input.value);
+  const inTestPath = isTest(input.path);
+  const triage = triageCandidate({
+    rule,
+    value: input.value,
+    lineText,
+    entropy,
+    isExample: SAFE_PATH.test(input.path) || /\.example$|\.sample$|\.template$/.test(input.path),
+    isFixture: inTestPath,
+    isDocPath: DOC_SAMPLE_PATH.test(input.path),
+    path: input.path,
+    assignedTo: /(?:const|let|var|readonly)?\s*([A-Za-z_$][\w$]*)\s*[:=]/.exec(lineText)?.[1],
+    context: lineText,
+  });
+  return {
+    file: input.path,
+    line: input.line,
+    ruleId: input.ruleId,
+    description: input.description,
+    masked: maskSecret(input.value),
+    entropy: Number(entropy.toFixed(2)),
+    ...(input.commit !== undefined && input.commit !== '' ? { commit: input.commit } : {}),
+    inTestPath,
+    likelyFalsePositive: triage.suppress,
+    falsePositiveReason: triage.reason,
+  };
+}
+
+interface GitleaksReport {
+  Description?: string;
+  File?: string;
+  StartLine?: number;
+  Secret?: string;
+  Match?: string;
+  RuleID?: string;
+  Commit?: string;
+}
+
+/** gitleaks `--report-format json`: one JSON array of results. */
+export function parseGitleaks(stdout: string, options: { isTest?: (p: string) => boolean } = {}): ParsedExternalHits {
+  const start = stdout.indexOf('[');
+  if (start < 0) return { ok: stdout.trim() === '' || stdout.trim() === '[]', hits: [] };
+  let report: unknown;
+  try {
+    report = JSON.parse(stdout.slice(start, stdout.lastIndexOf(']') + 1));
+  } catch {
+    return { ok: false, hits: [] };
+  }
+  if (!Array.isArray(report)) return { ok: false, hits: [] };
+  const hits: ExternalScannerHit[] = [];
+  for (const raw of report as GitleaksReport[]) {
+    const file = raw.File ?? '';
+    const value = raw.Secret ?? raw.Match ?? '';
+    if (file === '' || value === '') continue;
+    hits.push(
+      triageExternalHit(
+        {
+          ruleId: `gitleaks:${raw.RuleID ?? 'unknown'}`,
+          description: raw.Description ?? raw.RuleID ?? 'gitleaks finding',
+          value,
+          lineText: raw.Match ?? value,
+          path: file,
+          line: raw.StartLine ?? 1,
+          commit: raw.Commit,
+        },
+        options,
+      ),
+    );
+  }
+  return { ok: hits.length === (report as unknown[]).length, hits };
+}
+
+interface TrufflehogResult {
+  DetectorName?: string;
+  Raw?: string;
+  RawV2?: string;
+  SourceMetadata?: { Data?: { Filesystem?: { file?: string; line?: number }; Git?: { file?: string; line?: number; commit?: string } } };
+}
+
+/** trufflehog `--json`: one JSON object per line. */
+export function parseTrufflehog(stdout: string, root: string, options: { isTest?: (p: string) => boolean } = {}): ParsedExternalHits {
+  const lines = stdout.split('\n').filter((l) => l.trim().startsWith('{'));
+  const hits: ExternalScannerHit[] = [];
+  for (const line of lines) {
+    let result: TrufflehogResult;
+    try {
+      result = JSON.parse(line) as TrufflehogResult;
+    } catch {
+      return { ok: false, hits };
+    }
+    const source = result.SourceMetadata?.Data?.Filesystem ?? result.SourceMetadata?.Data?.Git;
+    const absolute = source?.file ?? '';
+    const value = result.Raw ?? result.RawV2 ?? '';
+    if (absolute === '' || value === '') continue;
+    // trufflehog reports absolute paths; Sentinel's path predicates are
+    // repository-relative, and a test-path check against an absolute path
+    // silently never matches.
+    const relative = absolute.startsWith(root) ? absolute.slice(root.length).replace(/^\//, '') : absolute;
+    hits.push(
+      triageExternalHit(
+        {
+          ruleId: `trufflehog:${result.DetectorName ?? 'unknown'}`,
+          description: `${result.DetectorName ?? 'detector'} match`,
+          value,
+          path: relative,
+          line: source?.line ?? 1,
+          commit: result.SourceMetadata?.Data?.Git?.commit,
+        },
+        options,
+      ),
+    );
+  }
+  return { ok: hits.length === lines.length, hits };
 }
 
 function countJsonArray(text: string): number {

@@ -6,7 +6,9 @@ import { renderHtml } from '../src/report/html.js';
 import { renderReport, renderConfidence, renderCoverage } from '../src/report/markdown.js';
 import { loadProfile, listProfiles, validateProfile, controlsFor } from '../src/profile.js';
 import { matchesFilter, detectTestCommand } from '../src/fix/index.js';
-import type { Finding, ScanContext } from '../src/types.js';
+import { analyze } from '../src/analyze.js';
+import type { ExternalScannerHit, Finding, ScanContext } from '../src/types.js';
+import type { RuleRepoContext } from '../src/rules/types.js';
 
 function ctx(overrides: Partial<ScanContext> = {}): ScanContext {
   return {
@@ -538,5 +540,98 @@ describe('fix commit hygiene', () => {
     const src = readFileSync(new URL('../src/fix/index.ts', import.meta.url), 'utf8');
     expect(src).toMatch(/Do not modify CI configuration, lockfiles, version numbers, or package\.json/);
     expect(src).toMatch(/Do not install or remove dependencies/);
+  });
+});
+
+/**
+ * Regression suite for a report that contradicted itself: the relayed gitleaks
+ * count was hardcoded to High with no triage and no path awareness, so the same
+ * test fixture appeared as Info under SEC-SECRET-IN-TEST and High under
+ * SEC-SECRET-HISTORY — two severities for one value, in one document.
+ */
+describe('SEC-SECRET-HISTORY triage', () => {
+  const repo = (): RuleRepoContext => ({ root: '/repo', files: [], texts: new Map(), masked: new Map(), isTest: () => false });
+
+  function historyFindings(hits: ExternalScannerHit[], overrides: Partial<ScanContext['secrets']['externalScanner']> = {}): Finding[] {
+    const scanCtx = ctx({
+      secrets: {
+        candidates: [],
+        filesScanned: 20,
+        externalScanner: {
+          name: 'gitleaks',
+          available: true,
+          findings: hits.length,
+          note: 'gitleaks detect reported findings',
+          hits,
+          hitsParsed: true,
+          ...overrides,
+        },
+      },
+    });
+    const { findings } = analyze(scanCtx, repo(), {
+      profile: loadProfile('owasp-asvs'),
+      proofDir: '/tmp/sentinel-test-proofs',
+      proofsEnabled: false,
+      toolVersion: '0.1.0',
+    });
+    return findings.filter((f) => f.ruleId === 'SEC-SECRET-HISTORY');
+  }
+
+  const hit = (over: Partial<ExternalScannerHit>): ExternalScannerHit => ({
+    file: 'src/config.ts',
+    line: 12,
+    ruleId: 'gitleaks:generic-api-key',
+    description: 'Generic API Key',
+    masked: 'abcd…wxyz',
+    entropy: 4.2,
+    inTestPath: false,
+    likelyFalsePositive: false,
+    falsePositiveReason: '',
+    ...over,
+  });
+
+  it('keeps High for a hit that survives triage', () => {
+    const [f] = historyFindings([hit({})]);
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe('High');
+    // and it cites the file gitleaks named, not ".git"
+    expect(f!.locations[0]!.file).toBe('src/config.ts');
+    expect(f!.locations[0]!.startLine).toBe(12);
+  });
+
+  it('triages out a report whose hits are all dismissed, despite the Secret severity floor', () => {
+    const [f] = historyFindings([
+      hit({ file: 'README.md', likelyFalsePositive: true, falsePositiveReason: 'value "app.auth.token" is a dotted identifier — a config name, not a credential' }),
+      hit({ file: 'docs/setup.md', likelyFalsePositive: true, falsePositiveReason: 'value contains a placeholder word' }),
+    ]);
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe('Info');
+    expect(f!.status).toBe('triaged-out');
+    expect(f!.title).toMatch(/triaged out as non-credentials/);
+  });
+
+  it('reports hits that only exist in test paths at Info, like every other credential finding', () => {
+    const [f] = historyFindings([hit({ file: 'test/fixtures/keys.ts', inTestPath: true })]);
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe('Info');
+    expect(f!.title).toMatch(/in test code only/);
+  });
+
+  it('keeps High when one live hit accompanies dismissed and test-path ones', () => {
+    const [f] = historyFindings([
+      hit({ file: 'test/fixtures/keys.ts', inTestPath: true }),
+      hit({ file: 'README.md', likelyFalsePositive: true, falsePositiveReason: 'placeholder' }),
+      hit({ file: 'src/server.ts', line: 7 }),
+    ]);
+    expect(f!.severity).toBe('High');
+    expect(f!.title).toMatch(/1 of 3/);
+    // the evidence leads with the surviving hit, not the noise
+    expect(f!.evidence).toContain('src/server.ts:7');
+  });
+
+  it('stays High when the scanner output could not be parsed, rather than assuming it is clean', () => {
+    const [f] = historyFindings([], { findings: 3, hitsParsed: false });
+    expect(f!.severity).toBe('High');
+    expect(f!.notes?.join(' ')).toMatch(/could not be parsed/);
   });
 });

@@ -533,19 +533,50 @@ function candidatesFromSecrets(ctx: ScanContext): CandidateFinding[] {
   // An external scanner's results are not re-derived, but they must not be
   // reduced to a footnote either: a credential in git history is a rotation job
   // whether or not this tool can enumerate it.
+  //
+  // They also must not bypass triage. Relaying the raw count at a hardcoded High
+  // produced a report in which the *same* test fixture was Info under
+  // SEC-SECRET-IN-TEST and High under this rule — two severities for one value,
+  // in one document. So every relayed hit goes through the same placeholder,
+  // publishable-key and test-path rules as Sentinel's own matches, and High
+  // survives only when a hit does.
   const external = ctx.secrets.externalScanner;
   if (external.available && external.findings > 0) {
+    const relayed = external.hits ?? [];
+    const triaged = external.hitsParsed === true && relayed.length > 0;
+    const dismissed = relayed.filter((h) => h.likelyFalsePositive);
+    const surviving = relayed.filter((h) => !h.likelyFalsePositive);
+    const inTests = surviving.filter((h) => h.inTestPath);
+    const live = surviving.filter((h) => !h.inTestPath);
+    const everythingDismissed = triaged && surviving.length === 0;
+    const testOnly = triaged && live.length === 0 && inTests.length > 0;
+    const shown = (live.length > 0 ? live : inTests.length > 0 ? inTests : dismissed).slice(0, 8);
+    const describe = (h: (typeof relayed)[number]): string =>
+      `${h.file}:${h.line} — ${h.description} (${h.masked}${h.commit !== undefined ? `, commit ${h.commit.slice(0, 8)}` : ''})${
+        h.likelyFalsePositive ? ` — dismissed: ${excerpt(h.falsePositiveReason, 90)}` : h.inTestPath ? ' — in a test/fixture path' : ''
+      }`;
+
     out.push({
       ruleId: 'SEC-SECRET-HISTORY',
-      title: `${external.name} reported ${external.findings} secret finding(s), including git history`,
+      title: !triaged
+        ? `${external.name} reported ${external.findings} secret finding(s), including git history`
+        : live.length > 0
+          ? `${live.length} of ${relayed.length} ${external.name} secret finding(s) survive triage, including git history`
+          : everythingDismissed
+            ? `${relayed.length} ${external.name} secret finding(s) triaged out as non-credentials`
+            : `${inTests.length} ${external.name} secret finding(s), all in test or fixture paths`,
       type: 'Secret',
-      severity: 'High',
-      area: 'Repository',
+      // High only for a hit that survived triage. An untriageable count stays
+      // High on purpose: "we could not check" is not "it is fine".
+      severity: !triaged || live.length > 0 ? 'High' : 'Info',
+      area: everythingDismissed || testOnly ? 'Tests' : 'Repository',
       labels: ['security', 'secrets', 'git-history'],
-      evidence: `${external.name} run over the repository: ${external.note}`,
+      evidence: triaged
+        ? `${shown.map(describe).join('; ')}${shown.length < relayed.length ? ` (+${relayed.length - shown.length} more)` : ''}`
+        : `${external.name} run over the repository: ${external.note}`,
       why:
-        'A credential that reached git history stays in every clone and every fork, and deleting the file does not remove it. Sentinel does not re-derive the individual results, so this finding exists to make sure the count is not mistaken for zero.',
-      recommendation: `Run \`${external.name}\` directly to list the results, rotate every value it names, and only then decide whether history rewriting is worth the disruption. Rotation is the part that actually closes the exposure.`,
+        'A credential that reached git history stays in every clone and every fork, and deleting the file does not remove it. Sentinel relays another scanner\'s detections rather than re-deriving them, but it triages them with its own rules first — a placeholder in a README and a live key in a config are not the same finding, and a count that mixes them cannot be acted on.',
+      recommendation: `Run \`${external.name}\` directly to list the results in full, rotate every value that survives triage, and only then decide whether history rewriting is worth the disruption. Rotation is the part that actually closes the exposure.`,
       acceptance: [
         `${external.name} reports zero findings, or every remaining one is an accepted, documented false positive`,
         'every value it named has been rotated and the old value is proven invalid',
@@ -554,20 +585,49 @@ function candidatesFromSecrets(ctx: ScanContext): CandidateFinding[] {
       effort: 'M',
       claimType: 'factual',
       source: 'scanner',
-      hits: [
-        {
-          ruleId: 'SEC-SECRET-HISTORY',
-          file: '.git',
-          line: 1,
-          excerpt: `${external.findings} finding(s)`,
-          message: `${external.name} reported ${external.findings} finding(s)`,
-          meta: { scanner: external.name, findings: external.findings },
-        },
-      ],
-      locations: [{ file: '.git', startLine: 1 }],
-      notes: [
-        'Sentinel deliberately does not parse and re-present another scanner\'s results: it would add a translation layer that can be wrong about someone else\'s finding. The count is reported; the detail comes from the tool itself.',
-      ],
+      inTestCodeOnly: testOnly,
+      hits:
+        shown.length > 0
+          ? shown.map((h) => ({
+              ruleId: 'SEC-SECRET-HISTORY',
+              file: h.file,
+              line: h.line,
+              excerpt: h.masked,
+              message: `${h.description} reported by ${external.name}${h.commit !== undefined ? ` in commit ${h.commit.slice(0, 8)}` : ''}`,
+              meta: {
+                scanner: external.name,
+                scannerRule: h.ruleId,
+                entropy: h.entropy,
+                inTest: h.inTestPath,
+                dismissed: h.likelyFalsePositive,
+              },
+            }))
+          : [
+              {
+                ruleId: 'SEC-SECRET-HISTORY',
+                file: '.git',
+                line: 1,
+                excerpt: `${external.findings} finding(s)`,
+                message: `${external.name} reported ${external.findings} finding(s)`,
+                meta: { scanner: external.name, findings: external.findings },
+              },
+            ],
+      locations: shown.length > 0 ? shown.map((h) => ({ file: h.file, startLine: h.line, excerpt: `${h.description}: ${h.masked}` })) : [{ file: '.git', startLine: 1 }],
+      triage: everythingDismissed
+        ? {
+            suppressed: true,
+            reason: `every one of the ${relayed.length} relayed ${external.name} result(s) was dismissed by Sentinel's triage (top reason: ${excerpt(dismissed[0]?.falsePositiveReason ?? 'n/a', 120)})`,
+            evidenceCited: `${dismissed[0]?.file ?? '.git'}:${dismissed[0]?.line ?? 1}`,
+            by: 'heuristic',
+          }
+        : undefined,
+      notes: triaged
+        ? [
+            `Sentinel does not re-detect another scanner's results — it relays them and applies its own triage so the severity is consistent with the rest of this report: ${live.length} surviving, ${inTests.length} in test/fixture paths, ${dismissed.length} dismissed. The detections themselves remain ${external.name}'s.`,
+          ]
+        : [
+            `${external.name}'s individual results could not be parsed, so the count is relayed without triage and kept at High. That is deliberate: an untriaged count is unknown, not clean. Run the tool directly to see what it found.`,
+          ],
     });
   }
 

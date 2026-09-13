@@ -342,10 +342,47 @@ export interface SecretCandidate {
   inTestPath: boolean;
 }
 
+/**
+ * One result relayed from another scanner, after Sentinel's own triage.
+ *
+ * Relaying a count with no triage is how one report said the same fixture was
+ * Info in one finding and High in another. The detection still belongs to the
+ * other tool — Sentinel does not re-derive it — but the *severity* has to go
+ * through the same path-awareness and placeholder rules as everything else, or
+ * the report contradicts itself.
+ */
+export interface ExternalScannerHit {
+  file: string;
+  line: number;
+  /** The other scanner's rule id, prefixed with its name. */
+  ruleId: string;
+  description: string;
+  /** Always masked — never the raw secret. */
+  masked: string;
+  entropy: number;
+  /** Set when the hit came from git history rather than the working tree. */
+  commit?: string;
+  inTestPath: boolean;
+  likelyFalsePositive: boolean;
+  falsePositiveReason: string;
+}
+
 export interface SecretResult {
   candidates: SecretCandidate[];
   filesScanned: number;
-  externalScanner: { name: string; available: boolean; findings: number; note: string };
+  externalScanner: {
+    name: string;
+    available: boolean;
+    findings: number;
+    note: string;
+    /**
+     * The individual results, triaged. Absent when no scanner ran; empty with
+     * `hitsParsed: false` when the output could not be parsed, in which case the
+     * count is reported untriaged rather than silently downgraded.
+     */
+    hits?: ExternalScannerHit[];
+    hitsParsed?: boolean;
+  };
 }
 
 export interface WorkflowJobStep {

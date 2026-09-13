@@ -734,20 +734,34 @@ function verifyDockerRoot(input: VerifyInput): VerifyResult {
  */
 function verifyExternalScanner(input: VerifyInput): VerifyResult {
   const external = input.ctx.secrets.externalScanner;
+  const hits = external.hits ?? [];
+  const triaged = external.hitsParsed === true && hits.length > 0;
+  const checks: VerificationCheck[] = [
+    {
+      description: `ran ${external.name} over the repository`,
+      outcome: 'pass',
+      detail: `${external.name}: ${external.note}`,
+    },
+  ];
+  if (triaged) {
+    const dismissed = hits.filter((h) => h.likelyFalsePositive).length;
+    const inTests = hits.filter((h) => !h.likelyFalsePositive && h.inTestPath).length;
+    checks.push({
+      description: `triaged all ${hits.length} relayed result(s) with Sentinel's own placeholder, publishable-key and test-path rules`,
+      outcome: 'pass',
+      detail: `${hits[0]!.file}:${hits[0]!.line} — ${hits.length - dismissed - inTests} surviving, ${inTests} in test/fixture paths, ${dismissed} dismissed`,
+    });
+  }
   return {
     verification: {
       method: 'tool-output',
       claimType: 'factual',
       performed: true,
       result: 'plausible',
-      checks: [
-        {
-          description: `ran ${external.name} over the repository`,
-          outcome: 'pass',
-          detail: `${external.name}: ${external.note}`,
-        },
-      ],
-      notes: `The count comes from ${external.name}, which Sentinel executed but whose individual results it does not re-derive. Reported as plausible rather than confirmed: Sentinel verified that the scanner ran and what it returned, not that each result is a live credential. Run the scanner directly to triage them.`,
+      checks,
+      notes: triaged
+        ? `The detections come from ${external.name}, which Sentinel executed; Sentinel did not re-derive them, but it did triage each one with the same rules it applies to its own matches, using the file path the scanner reported. Reported as plausible rather than confirmed: a surviving result is a credential-shaped value in a path, not a proven live credential. Run the scanner directly for the full detail.`
+        : `The count comes from ${external.name}, which Sentinel executed but whose individual results it could not parse, so no triage was possible. Reported as plausible rather than confirmed: Sentinel verified that the scanner ran and what it returned, not that each result is a live credential. Run the scanner directly to triage them.`,
     },
     notes: [],
   };

@@ -369,6 +369,88 @@ describe('entropy and masking', () => {
   });
 });
 
+/**
+ * Relayed results have to go through the same triage as Sentinel's own matches.
+ * A count with no path awareness is what let one report call the same fixture
+ * Info in one finding and High in another.
+ */
+describe('external scanner results are triaged, not just counted', () => {
+  const gitleaksJson = (rows: Array<Record<string, unknown>>): string => JSON.stringify(rows);
+
+  it('parses gitleaks JSON into triaged hits with the path it reported', async () => {
+    const { parseGitleaks } = await import('../src/collectors/secrets.js');
+    const parsed = parseGitleaks(
+      gitleaksJson([
+        { Description: 'Generic API Key', File: 'src/server.ts', StartLine: 14, Secret: 'Jx9wQ2pL8sF4tB7+nE1vM5yH0cR6zKd3A=', RuleID: 'generic-api-key', Commit: 'deadbeefcafe' },
+      ]),
+    );
+    expect(parsed.ok).toBe(true);
+    expect(parsed.hits).toHaveLength(1);
+    expect(parsed.hits[0]!.file).toBe('src/server.ts');
+    expect(parsed.hits[0]!.line).toBe(14);
+    expect(parsed.hits[0]!.commit).toBe('deadbeefcafe');
+    expect(parsed.hits[0]!.likelyFalsePositive).toBe(false);
+    // the raw secret never leaves the collector
+    expect(parsed.hits[0]!.masked).not.toContain('Jx9wQ2pL8sF4tB7+nE1vM5yH0cR6zKd3A=');
+  });
+
+  it('dismisses identifier-shaped generic matches, the same as its own', async () => {
+    const { parseGitleaks } = await import('../src/collectors/secrets.js');
+    const parsed = parseGitleaks(
+      gitleaksJson([
+        { Description: 'Generic API Key', File: 'src/storage.ts', StartLine: 3, Secret: 'app.auth.accessToken', Match: "const TOKEN_KEY = 'app.auth.accessToken'", RuleID: 'generic-api-key' },
+        { Description: 'Generic API Key', File: 'README.md', StartLine: 9, Secret: 'your-api-key-here', Match: 'export API_KEY=your-api-key-here', RuleID: 'generic-api-key' },
+      ]),
+    );
+    expect(parsed.ok).toBe(true);
+    expect(parsed.hits.every((h) => h.likelyFalsePositive)).toBe(true);
+    expect(parsed.hits[0]!.falsePositiveReason).toMatch(/identifier/);
+  });
+
+  it('marks a test-path hit without dismissing it', async () => {
+    const { parseGitleaks } = await import('../src/collectors/secrets.js');
+    const parsed = parseGitleaks(
+      gitleaksJson([{ Description: 'GitHub PAT', File: 'test/fixtures/tokens.ts', StartLine: 2, Secret: `ghp_${'a'.repeat(36)}`, RuleID: 'github-pat' }]),
+    );
+    expect(parsed.hits[0]!.inTestPath).toBe(true);
+    // a provider pattern is precise: a test path lowers its severity, it does not dismiss it
+    expect(parsed.hits[0]!.likelyFalsePositive).toBe(false);
+  });
+
+  it('does not dismiss a real provider key just because it sits in a fixture', async () => {
+    const { triageExternalHit } = await import('../src/collectors/secrets.js');
+    const hit = triageExternalHit({
+      ruleId: 'gitleaks:stripe-access-token',
+      description: 'Stripe secret key',
+      value: `sk_live_${'9'.repeat(24)}`,
+      path: 'test/fixtures/payments.ts',
+      line: 4,
+    });
+    expect(hit.likelyFalsePositive).toBe(false);
+    expect(hit.inTestPath).toBe(true);
+  });
+
+  it('reports an unparseable report as untriageable rather than clean', async () => {
+    const { parseGitleaks } = await import('../src/collectors/secrets.js');
+    expect(parseGitleaks('gitleaks: fatal: not a git repository').ok).toBe(false);
+    expect(parseGitleaks('[{"File":').ok).toBe(false);
+    // an empty report is parsed successfully and has nothing to triage
+    expect(parseGitleaks('[]')).toEqual({ ok: true, hits: [] });
+  });
+
+  it('relativises trufflehog absolute paths so the test-path check can see them', async () => {
+    const { parseTrufflehog } = await import('../src/collectors/secrets.js');
+    const line = JSON.stringify({
+      DetectorName: 'Generic',
+      Raw: 'Jx9wQ2pL8sF4tB7+nE1vM5yH0cR6zKd3A=',
+      SourceMetadata: { Data: { Filesystem: { file: '/repo/test/fixtures/keys.ts', line: 5 } } },
+    });
+    const parsed = parseTrufflehog(line, '/repo');
+    expect(parsed.hits[0]!.file).toBe('test/fixtures/keys.ts');
+    expect(parsed.hits[0]!.inTestPath).toBe(true);
+  });
+});
+
 describe('secret-scanning coverage statements are mutually exclusive', () => {
   it('never claims git history is both covered and unexamined', async () => {
     const { collectSecrets } = await import('../src/collectors/secrets.js');
@@ -388,7 +470,9 @@ describe('secret-scanning coverage statements are mutually exclusive', () => {
     const n2 = withScanner.run.notExamined.join(' ');
     if (withScanner.secrets.externalScanner.available) {
       expect(n2).not.toMatch(/only the working tree was scanned/);
-      expect(n2).toMatch(/not re-derived as Sentinel findings/);
+      // Either wording is acceptable; what must hold is that the note says the
+      // other scanner's detections are relayed rather than re-derived.
+      expect(n2).toMatch(/not re-der\w+ (?:as Sentinel findings|the)|relayed and triaged/);
     }
     rmSync(dir, { recursive: true, force: true });
   });
