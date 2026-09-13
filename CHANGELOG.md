@@ -43,6 +43,19 @@ share), SARIF (`precision` `very-high` vs `high`, new `proofConfirmed` /
   instead of within rounding distance of it. In the risk matrix, only
   proof-confirmed findings are Likelihood High; pattern-confirmed are Medium.
 
+### Publishable-by-design keys are not leaks
+
+- **A PostHog project key no longer leads a High secret finding.** `SECRET-001` opened with `phc_…` — 48 characters, entropy 4.77, and documented by its own provider as safe to ship in client code. Keys whose provider publishes them on purpose are now triaged out with the reason **"publishable by design"**, naming the provider and why rotation would achieve nothing: PostHog project keys (`phc_`), Stripe publishable keys (`pk_live_`/`pk_test_`), Sentry DSNs, Google browser keys and Firebase web `apiKey` values, and write-only analytics keys (Mixpanel, Segment, Amplitude, Heap, Plausible, Fathom and similar). The allowlist is exported as data (`PUBLISHABLE_KEY_RULES`), one reason per entry.
+- Stripe *secret* keys (`sk_`/`rk_`) are explicitly outside the allowlist, and the ambiguous Google `AIza…` shape is only cleared when the surrounding lines show a browser/Maps/Firebase context — a key that might be an unrestricted server key is still reported.
+- **Shell substitutions are no longer credentials.** `export API_KEY="$(python3 -c 'import secrets; print(...)')"` in a docs file was reported three times: the capture stops at the first quote, leaving `$(python3 -c `, which the existing interpolation check could not recognise because it requires a closing delimiter. An *opening* `$(` or `${` is now enough.
+- **Documentation placeholders in prose files are dismissed** — `<your-key>`, `xxx`, `changeme`, `replace-this`, `…`-truncated values — while the precise provider patterns keep firing there, so a real key pasted into a README is still reported.
+- **Committed allow annotations are honoured**: `gitleaks:allow`, `sentinel:allow`, `pragma: allowlist secret`, `nosec`, `trufflehog:ignore`, `detect-secrets:allow`. The annotation must be on the line it excuses, and the suppression is published with the annotation as its reason rather than applied silently.
+- A generic match in a `docs/`, `examples/` or `samples/` path now says so, instead of claiming the file "is a test/fixture path".
+
+### Fixed — a false-negative hiding inside a false-positive filter
+
+- **A `*Key`/`*_KEY` variable name could silence a real provider credential.** The "this name holds the *name* of a secret" heuristic fired on any identifier-shaped value, and `sk_live_…`, `AIza…` and `ghp_…` are identifier-shaped — so `const stripeApiKey = 'sk_live_…'` and `STRIPE_SECRET_KEY = "rk_live_…"` were dismissed as storage keys. The heuristic no longer applies to the high-precision provider patterns: when the value itself identifies the provider, the variable name is irrelevant.
+
 ### Path-aware severity for credential and auth findings
 
 - **A session-hygiene spec is no longer a High "authentication material written to web storage".** `SEC-TOKEN-WEBSTORAGE` cited `frontend/e2e-prod/admin-session-hygiene.spec.ts` — a test whose purpose is exercising session hygiene — at High severity. The credential/auth family (`SEC-TOKEN-WEBSTORAGE`, `SEC-SECRET-COMMITTED`, `SEC-SECRET-IN-CLIENT-BUNDLE`, `SEC-JWT-CLIENT-TRUST`, `SEC-CLIENT-SIDE-AUTHZ`, `DOCKER-SECRET-ARG`) now reports at `Info` when every cited location is a test, spec or fixture path, with `— in test code only` in the title and an explicit note saying why. The Info ceiling is applied *after* the profile's `severityFloor`, which otherwise dragged `Secret` findings back up to High.

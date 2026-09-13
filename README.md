@@ -196,6 +196,16 @@ sentinel init-workflow           # write .github/workflows/sentinel.yml
   working tree. Every candidate gets a triage verdict with a reason.
   `gitleaks`/`trufflehog` are used if present (they cover git history, which the
   built-in scanner does not, and `COVERAGE.md` says so when they are absent).
+  Keys the provider publishes **on purpose** are triaged out as *publishable by
+  design*, not reported as credentials: PostHog project keys (`phc_`), Stripe
+  publishable keys (`pk_live_`/`pk_test_` — the `sk_`/`rk_` secret keys are still
+  reported), Sentry DSNs, Google browser keys and Firebase web configs, and
+  write-only analytics keys (Mixpanel/Segment/Amplitude and similar). So are shell
+  substitutions (`$(…)`, `${…}`, including the unterminated fragments a quote-aware
+  capture produces) and documentation placeholders such as `<your-key>`, `xxx` and
+  `changeme` in prose files. A committed `gitleaks:allow`-style annotation is
+  honoured and published as the dismissal reason, so you can disagree with the
+  author rather than never learning the line exists.
 - **CI** — does the gate actually gate? `continue-on-error: true` and `|| true`
   are treated as not gating, because they are not. Unpinned action references and
   fork-context triggers are flagged.

@@ -65,6 +65,17 @@ const PLACEHOLDER = /^(?:x{3,}|y{3,}|\*{3,}|\.{3,}|<.*>|\$\{.*\}|%.*%|\{\{.*\}\}
  */
 const CONTAINS_INTERPOLATION = /\$\{[^}]*\}|\$\([^)]*\)|\{\{[^}]*\}\}|%[A-Za-z_][A-Za-z0-9_]*%|\$[A-Z_][A-Z0-9_]{2,}|<[A-Za-z_-]+>|#\{[^}]*\}/;
 /**
+ * The *opening* of a shell substitution or a variable reference, with no closing
+ * delimiter required.
+ *
+ * Needed because the capture stops at the first quote: a documented
+ * `export API_KEY="$(python3 -c 'import secrets; print(...)')"` yields the value
+ * `$(python3 -c ` — a command substitution that `CONTAINS_INTERPOLATION` cannot
+ * see because its `\$\([^)]*\)` never finds the closing paren. Sentinel reported
+ * that line, three times, as a committed credential.
+ */
+const SHELL_SUBSTITUTION_FRAGMENT = /\$\(|\$\{|`[^`]*\$/;
+/**
  * Dotted / camel / snake identifier with no random-looking segment: a storage
  * key, an env var name, a config path. Never a credential.
  */
@@ -80,6 +91,94 @@ const SAFE_PATH = /(^|\/)(\.env\.example|\.env\.sample|\.env\.template|example\.
  * path" is decided in one place for the whole tool.
  */
 const DOC_SAMPLE_PATH = /(^|\/)(examples?|docs?|samples?)(\/|$)/i;
+/** Prose file types, where a credential-shaped token is usually an instruction. */
+const PROSE_FILE = /\.(md|mdx|markdown|rst|adoc|asciidoc|txt)$/i;
+/**
+ * Placeholder shapes specific to documentation: angle brackets, x-runs, ellipses
+ * and the standard "put yours here" words. Narrower than a blanket "ignore
+ * markdown", because a real key pasted into a README is a real leak — the precise
+ * provider patterns still fire there.
+ */
+const DOC_PLACEHOLDER =
+  /<[^>]*>|\bx{3,}\b|\.\.\.|…|\b(?:changeme|change[_-]me|replace[_-]?me|replace[_-]?this|your[_-]?\w+|insert[_-]?\w+|paste[_-]?\w+|\w*[_-]?here|abc123|foo|bar|baz)\b/i;
+/**
+ * An explicit, committed "this is fine" annotation, in the spelling the major
+ * scanners use. Honoured because it is auditable: the suppression is published
+ * with the annotation as its reason, so a reader can disagree with the author
+ * rather than never learning the line exists.
+ */
+const ALLOW_ANNOTATION = /\b(?:gitleaks:allow|sentinel:allow|pragma:\s*allowlist\s+secret|nosec\b|noqa:\s*S\d|trufflehog:ignore|detect-secrets:allow)/i;
+
+/**
+ * Keys whose provider publishes them *on purpose*: they ship in client bundles,
+ * are visible in DevTools to every visitor, and rotating one fixes nothing.
+ *
+ * Reporting these as committed credentials is the single fastest way to lose a
+ * reader's trust in a secret section — Sentinel led a High "13 credential-shaped
+ * values" finding with a PostHog project key whose own source comment explained
+ * it is designed to ship in client code.
+ *
+ * `context` is a window of lines around the match. Two entries need it, because
+ * the value alone is genuinely ambiguous: a Google `AIza…` key is a browser key
+ * or a server key depending on how it is restricted, and only the surrounding
+ * config says which.
+ */
+interface PublishableKeyRule {
+  id: string;
+  /** Completed as "publishable by design: <why>". */
+  why: string;
+  matches: (input: { value: string; assignedTo?: string; lineText: string; context: string }) => boolean;
+}
+
+const NAME_SUGGESTS_PUBLIC_ANALYTICS =
+  /(?:mixpanel|segment|amplitude|posthog|heap|plausible|fathom|umami|matomo|hotjar|logrocket|fullstory)[_.\- ]?(?:public|project|write|client|browser|api|site|instrumentation)?[_.\- ]?(?:api[_-]?key|write[_-]?key|write[_-]?token|site[_-]?id|token|key|id)\b/i;
+const CLIENT_BUILD_PREFIX = /\b(?:NEXT_PUBLIC|VITE|REACT_APP|PUBLIC|EXPO_PUBLIC|GATSBY|NUXT_PUBLIC|VUE_APP)_/;
+
+export const PUBLISHABLE_KEY_RULES: PublishableKeyRule[] = [
+  {
+    id: 'posthog-project-key',
+    why: 'a PostHog project API key (`phc_…`). PostHog documents it as safe to expose; it can only write events, not read data',
+    matches: ({ value }) => /^phc_[A-Za-z0-9]{20,}$/.test(value),
+  },
+  {
+    id: 'stripe-publishable-key',
+    why: 'a Stripe *publishable* key (`pk_live_`/`pk_test_`), which identifies the account to the browser and cannot move money. The secret key is `sk_`/`rk_`, and that one is still reported',
+    matches: ({ value }) => /^pk_(?:live|test)_[A-Za-z0-9]{10,}$/.test(value),
+  },
+  {
+    id: 'sentry-dsn',
+    why: 'a Sentry DSN, which is an ingest endpoint the client must know. It accepts events; it cannot read them',
+    matches: ({ value }) => /^https:\/\/[0-9a-f]{16,}@[A-Za-z0-9.-]*sentry\.io\/\d+$/i.test(value),
+  },
+  {
+    id: 'google-browser-key',
+    why: 'a Google browser API key used from client code (Maps/Places or a Firebase web config). It is meant to ship; the control is an HTTP-referrer and API restriction in the provider console, not secrecy',
+    matches: ({ value, assignedTo, lineText, context }) =>
+      /^AIza[0-9A-Za-z_-]{35}$/.test(value) &&
+      (/maps\.googleapis\.com|googlemaps|google[_-]?maps|places|firebase|authDomain|storageBucket|messagingSenderId|measurementId|appId/i.test(context) ||
+        /maps|firebase/i.test(assignedTo ?? '') ||
+        CLIENT_BUILD_PREFIX.test(lineText)),
+  },
+  {
+    id: 'public-analytics-write-key',
+    why: 'a write-only analytics key (Mixpanel/Segment/Amplitude and similar). These are embedded in the page by design — they can send events and cannot read them',
+    matches: ({ assignedTo, lineText, context }) =>
+      NAME_SUGGESTS_PUBLIC_ANALYTICS.test(assignedTo ?? '') ||
+      NAME_SUGGESTS_PUBLIC_ANALYTICS.test(lineText) ||
+      (CLIENT_BUILD_PREFIX.test(lineText) && NAME_SUGGESTS_PUBLIC_ANALYTICS.test(context)),
+  },
+];
+
+/** The first publishable-key rule that claims this value, if any. */
+export function publishableKeyMatch(input: {
+  value: string;
+  assignedTo?: string;
+  lineText: string;
+  context?: string;
+}): PublishableKeyRule | undefined {
+  const ctx = input.context ?? input.lineText;
+  return PUBLISHABLE_KEY_RULES.find((r) => r.matches({ ...input, context: ctx }));
+}
 const LOCKFILE = /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|Gemfile\.lock|composer\.lock|go\.sum)$/;
 const MIN_SCAN_EXT = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '.json', '.yml', '.yaml',
@@ -154,7 +253,7 @@ export function scanText(
   const { gitignored, isTest = isTestOrFixturePath } = options;
   const isExample = SAFE_PATH.test(path) || /\.example$|\.sample$|\.template$/.test(path);
   const inTestPath = isTest(path);
-  const isFixture = inTestPath || DOC_SAMPLE_PATH.test(path);
+  const isDocPath = DOC_SAMPLE_PATH.test(path);
   const lines = text.split('\n');
 
   for (const rule of SECRET_RULES) {
@@ -171,7 +270,10 @@ export function scanText(
       const assignedTo =
         (rule.group > 1 ? m[1] : undefined) ??
         /(?:const|let|var|readonly)?\s*([A-Za-z_$][\w$]*)\s*[:=]/.exec(lineText)?.[1];
-      const triage = triageCandidate({ rule, value, lineText, entropy, isExample, isFixture, path, assignedTo });
+      // A few lines either side, so a value whose meaning lives in its
+      // neighbours (a Firebase web config, a maps script tag) can be classified.
+      const context = lines.slice(Math.max(0, line - 5), line + 4).join('\n');
+      const triage = triageCandidate({ rule, value, lineText, context, entropy, isExample, isFixture: inTestPath, isDocPath, path, assignedTo });
       out.push({
         file: path,
         line,
@@ -196,10 +298,15 @@ interface TriageInput {
   lineText: string;
   entropy: number;
   isExample: boolean;
+  /** A test, spec, fixture or mock path. */
   isFixture: boolean;
+  /** A documentation, example or sample path. */
+  isDocPath?: boolean;
   path: string;
   /** The identifier the value was assigned to, when the rule captured one. */
   assignedTo?: string;
+  /** A few lines around the match, for values whose meaning is contextual. */
+  context?: string;
 }
 
 /**
@@ -219,12 +326,23 @@ export function credentialPart(value: string): string {
 }
 
 export function triageCandidate(input: TriageInput): { suppress: boolean; reason: string } {
-  const { rule, value, lineText, entropy, isExample, isFixture, path, assignedTo } = input;
+  const { rule, value, lineText, entropy, isExample, isFixture, isDocPath, path, assignedTo, context } = input;
   const credential = credentialPart(value);
 
-  // Interpolation is checked first because it is the more precise diagnosis: a
-  // `${TOKEN}` is not merely placeholder-shaped, it is a run-time reference, and
-  // the reason a reader gets should say which.
+  // A key the provider publishes on purpose is checked first, because it is the
+  // most informative verdict available: not "this looks like a placeholder" but
+  // "this is a real key, and it is supposed to be here".
+  const publishable = publishableKeyMatch({ value, assignedTo, lineText, context });
+  if (publishable) {
+    return {
+      suppress: true,
+      reason: `publishable by design — ${publishable.why}. Rotating it achieves nothing, so it is not reported as a credential (rule: ${publishable.id})`,
+    };
+  }
+
+  // Interpolation is checked next because it is a more precise diagnosis than
+  // "placeholder-shaped": a `${TOKEN}` is a run-time reference, and the reason a
+  // reader gets should say which.
   const interpolation = CONTAINS_INTERPOLATION.exec(credential);
   if (interpolation) {
     return {
@@ -232,10 +350,34 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
       reason: `the credential portion is a variable reference (${interpolation[0].slice(0, 40)}) resolved at run time, so nothing secret is embedded here`,
     };
   }
+  const shellFragment = SHELL_SUBSTITUTION_FRAGMENT.exec(credential);
+  if (shellFragment) {
+    return {
+      suppress: true,
+      reason: `the value opens a shell substitution or variable reference (${shellFragment[0].slice(0, 24)}) — the credential is generated or injected when the command runs, and the capture merely stopped at the next quote`,
+    };
+  }
+  if (ALLOW_ANNOTATION.test(lineText)) {
+    return {
+      suppress: true,
+      reason: `the line carries an explicit scanner allow annotation (${ALLOW_ANNOTATION.exec(lineText)![0]}). Honoured because it is committed and reviewable — published here rather than applied silently, so you can disagree with the author`,
+    };
+  }
+  if (PROSE_FILE.test(path) && !rule.precise && DOC_PLACEHOLDER.test(value)) {
+    return {
+      suppress: true,
+      reason: `${path} is prose and the value is a documentation placeholder ("${credential.slice(0, 24)}") telling the reader what to substitute. Provider-specific patterns still fire in prose files, so a real key pasted into a document is still reported`,
+    };
+  }
   if (PLACEHOLDER.test(credential.trim())) {
     return { suppress: true, reason: `value is a placeholder token ("${credential.slice(0, 24)}"), not a credential` };
   }
-  if (assignedTo && NAME_HOLDER.test(assignedTo) && IDENTIFIER_SHAPED.test(value.trim()) && value.trim().length < 64) {
+  // Never for a precise provider pattern. `sk_live_…` is identifier-shaped and
+  // `stripeApiKey` ends in `Key`, so this branch was silently dismissing real
+  // Stripe, GitHub and Google credentials whenever they were assigned to a
+  // `*Key`/`*_KEY` name — a false negative hiding inside a false-positive filter.
+  // When the *value* identifies the provider, the variable name is irrelevant.
+  if (!rule.precise && assignedTo && NAME_HOLDER.test(assignedTo) && IDENTIFIER_SHAPED.test(value.trim()) && value.trim().length < 64) {
     return {
       suppress: true,
       reason: `"${assignedTo}" holds the *name* of a credential (value "${value.slice(0, 40)}" is an identifier, not random material) — a storage key or header name rather than a secret`,
@@ -271,6 +413,9 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
     }
     if (isFixture) {
       return { suppress: true, reason: `${path} is a test/fixture path and the match is a generic pattern` };
+    }
+    if (isDocPath) {
+      return { suppress: true, reason: `${path} is a documentation/example path and the match is a generic pattern` };
     }
   }
   return { suppress: false, reason: '' };
