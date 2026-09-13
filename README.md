@@ -163,7 +163,7 @@ Two asymmetries keep the verdicts honest:
 ```
 sentinel scan <repo> [options]
 sentinel fix <findings-dir> [options]
-sentinel rules [--json]          # list the 30 rules with their claim types
+sentinel rules [--json]          # list the 31 rules with their claim types
 sentinel profiles                # list the standards profiles
 sentinel init-workflow           # write .github/workflows/sentinel.yml
 ```
