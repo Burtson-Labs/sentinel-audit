@@ -218,6 +218,49 @@ describe('shell placeholders and documentation placeholders', () => {
   });
 });
 
+describe('prose inside a comment is not a credential', () => {
+  it('does not report a docblock sentence as a committed credential', () => {
+    // verbatim from frontend/src/utils/audiobookLyrics.js — after the first three
+    // fixes this docblock was the *entire* content of a High "credential-shaped
+    // value present in the working tree" finding
+    const hits = run(
+      'frontend/src/utils/audiobookLyrics.js',
+      [
+        '/**',
+        ' * Split a script into the chapters the backend parser would render, each with',
+        ' * its display tokens: `[{ title, tokens }]`. Control tokens are stripped.',
+        ' */',
+        'export function splitChapters() {}',
+        '',
+      ].join('\n'),
+    );
+    expect(hits).toEqual([]);
+  });
+
+  it('covers line comments, docblock continuations and non-JS comment markers', () => {
+    const cases: Array<[string, string]> = [
+      ['src/a.ts', "// const apiToken = 'xQ4$vB9#mL2@pR7!kT5%';"],
+      ['src/a.ts', " * see apiToken: 'xQ4$vB9#mL2@pR7!kT5%' in the old module"],
+      ['backend/a.py', "# api_key = 'xQ4$vB9#mL2@pR7!kT5%'"],
+      ['infra/a.tf', "# access_key = 'xQ4$vB9#mL2@pR7!kT5%'"],
+      ['db/a.sql', "-- password = 'xQ4$vB9#mL2@pR7!kT5%'"],
+    ];
+    for (const [path, line] of cases) {
+      expect(run(path, `${line}\n`), `${path}: ${line}`).toEqual([]);
+    }
+  });
+
+  it('does not mistake a // inside a string literal for a comment', () => {
+    const hits = run('src/a.ts', "const apiToken = 'https://xQ4vB9mL2pR7kT5zW8nJ3cF6';\n");
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('still reports a real provider key commented out — it is committed either way', () => {
+    const hits = run('src/a.ts', `// const t = 'ghp_${'d'.repeat(36)}';\n`);
+    expect(live(hits).length, 'a precise provider pattern fires inside a comment too').toBeGreaterThan(0);
+  });
+});
+
 describe('committed allow annotations', () => {
   it('honours an explicit annotation and publishes it as the reason', () => {
     const hits = run('src/a.ts', `const apiToken = 'xQ4$vB9#mL2@pR7!kT5%zW8&nJ3'; // gitleaks:allow — rotated, kept for the migration\n`);

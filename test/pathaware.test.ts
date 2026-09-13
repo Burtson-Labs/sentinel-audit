@@ -221,6 +221,17 @@ describe('test paths are not excluded from every rule', () => {
   });
 });
 
+describe('a dismissal is not reported at a severity the profile floor invented', () => {
+  it('keeps the triaged-out secret-noise finding at Info, not High', () => {
+    const f = mixed.find((x) => x.ruleId === 'SEC-SECRET-TRIAGED');
+    expect(f, 'the fixture has suppressed secret matches').toBeDefined();
+    expect(f!.status).toBe('triaged-out');
+    // owasp-asvs floors Secret at High; a finding we are dismissing must not be
+    // raised by it, or a consumer counting High findings believes the dismissal
+    expect(f!.severity).toBe('Info');
+  });
+});
+
 describe('the test-path list is configurable in the profile', () => {
   it('an unusual directory is production code by default', () => {
     expect(isTestOrFixturePath('checks/session-probe.ts')).toBe(false);

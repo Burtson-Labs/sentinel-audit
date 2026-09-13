@@ -52,6 +52,11 @@ share), SARIF (`precision` `very-high` vs `high`, new `proofConfirmed` /
 - **Committed allow annotations are honoured**: `gitleaks:allow`, `sentinel:allow`, `pragma: allowlist secret`, `nosec`, `trufflehog:ignore`, `detect-secrets:allow`. The annotation must be on the line it excuses, and the suppression is published with the annotation as its reason rather than applied silently.
 - A generic match in a `docs/`, `examples/` or `samples/` path now says so, instead of claiming the file "is a test/fixture path".
 
+### Fixed — two more false positives, found by re-scanning the same repository
+
+- **A docblock sentence is no longer a committed credential.** `its display tokens: \`[{ title, tokens }]\`` in a JSDoc comment parses as `tokens: "<19 chars>"`, and after the fixes above it was the *entire* content of a High "credential-shaped value present in the working tree" finding. Generic matches inside comments are now skipped — via the JS/TS comment lexer where it applies, and a line-prefix check (`//`, `*`, `#`, `--`, `;`, `"""`) elsewhere. The precise provider patterns still fire inside comments, because a real `ghp_…` in a comment is committed either way.
+- **A dismissal is no longer reported at High.** The profile's severity *floor* (`severityFloor: { Secret: "High" }`) was raising triaged-out findings, so "53 secret-scanner matches triaged out as non-credentials" was published as a High. The floor no longer applies to a finding that is being dismissed.
+
 ### Fixed — a false-negative hiding inside a false-positive filter
 
 - **A `*Key`/`*_KEY` variable name could silence a real provider credential.** The "this name holds the *name* of a secret" heuristic fired on any identifier-shaped value, and `sk_live_…`, `AIza…` and `ghp_…` are identifier-shaped — so `const stripeApiKey = 'sk_live_…'` and `STRIPE_SECRET_KEY = "rk_live_…"` were dismissed as storage keys. The heuristic no longer applies to the high-precision provider patterns: when the value itself identifies the provider, the variable name is irrelevant.

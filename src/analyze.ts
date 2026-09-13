@@ -141,7 +141,12 @@ export function analyze(ctx: ScanContext, repo: RuleRepoContext, options: Analyz
           verified.verification.proof?.verdict,
         );
 
-    let severity = applyFloor(options.profile, c.type, c.severity);
+    // The profile's severity *floor* expresses "this category is categorically
+    // serious". It has no business raising a finding we are simultaneously
+    // dismissing: `severityFloor: { Secret: "High" }` published "53 matches
+    // triaged out as non-credentials" as a High, which any consumer counting
+    // High findings would have believed.
+    let severity = c.triage?.suppressed ? c.severity : applyFloor(options.profile, c.type, c.severity);
     // Path-aware severity. Deliberately applied *after* the profile floor:
     // `severityFloor: { Secret: "High" }` would otherwise drag a credential in a
     // fixture back up to High, which is the exact defect this guards against.

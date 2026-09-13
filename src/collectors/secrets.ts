@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { readTextSafe, type RepoFile } from '../util/fsx.js';
 import { maskSecret, shannonEntropy } from '../util/hash.js';
+import { maskSource } from '../util/lex.js';
 import { commandExists, run } from '../util/exec.js';
 import { isTestOrFixturePath } from '../util/testpaths.js';
 import type { CollectorRun, SecretCandidate, SecretResult } from '../types.js';
@@ -108,6 +109,14 @@ const DOC_PLACEHOLDER =
  * rather than never learning the line exists.
  */
 const ALLOW_ANNOTATION = /\b(?:gitleaks:allow|sentinel:allow|pragma:\s*allowlist\s+secret|nosec\b|noqa:\s*S\d|trufflehog:ignore|detect-secrets:allow)/i;
+/** JS/TS-family files, where `maskSource` is an accurate comment lexer. */
+const JS_FAMILY = /\.[cm]?[jt]sx?$/i;
+/**
+ * Everything before the match on its own line, when that prefix is a comment
+ * opener or a docblock continuation. Language-agnostic fallback for the files
+ * `maskSource` does not lex.
+ */
+const COMMENT_LINE_PREFIX = /^\s*(?:\/\/|\/\*|\*|#|--|;|%|<!--|"""|''')/;
 
 /**
  * Keys whose provider publishes them *on purpose*: they ship in client bundles,
@@ -255,6 +264,10 @@ export function scanText(
   const inTestPath = isTest(path);
   const isDocPath = DOC_SAMPLE_PATH.test(path);
   const lines = text.split('\n');
+  // Comments blanked, string bodies kept — the right search space for *values*.
+  // Only for JS/TS, where this lexer is accurate; other languages fall back to
+  // the line-prefix check below.
+  const commentMask = JS_FAMILY.test(path) ? maskSource(text).codeAndStrings : null;
 
   for (const rule of SECRET_RULES) {
     const rx = new RegExp(rule.re.source, rule.re.flags.includes('g') ? rule.re.flags : `${rule.re.flags}g`);
@@ -264,6 +277,16 @@ export function scanText(
       if (!value) continue;
       const line = text.slice(0, m.index).split('\n').length;
       const lineText = lines[line - 1] ?? '';
+      // Prose inside a comment is not a credential. A docblock sentence —
+      // "its display tokens: `[{ title, tokens }]`" — parses as
+      // `tokens: "<19 chars>"` and was the *entire* content of a High "credential
+      // present in the working tree" finding. Generic matches only: a real
+      // `ghp_…` pasted into a comment is still committed, so the precise
+      // provider patterns keep firing there.
+      if (!rule.precise && inComment(text, m.index, lineText, commentMask)) {
+        if (m.index === rx.lastIndex) rx.lastIndex += 1;
+        continue;
+      }
       const entropy = shannonEntropy(value);
       // group 1 of the generic rule is the assignment target; for precise rules
       // fall back to reading an assignment off the line.
@@ -290,6 +313,24 @@ export function scanText(
       if (m.index === rx.lastIndex) rx.lastIndex += 1;
     }
   }
+}
+
+/**
+ * Is the match at `index` inside a comment?
+ *
+ * Two mechanisms, strongest first: the JS/TS lexer when we have it (it knows a
+ * `//` inside a string literal is not a comment), then the line prefix, which
+ * covers `#`, `--`, `;`, docblock `*` continuations and `"""` blocks in the
+ * languages the lexer does not lex.
+ */
+export function inComment(text: string, index: number, lineText: string, commentMask: string | null): boolean {
+  if (commentMask && commentMask.length === text.length) {
+    // the lexer blanked this offset, so it is a comment (or a regex body)
+    if (commentMask[index] === ' ' && text[index] !== ' ') return true;
+  }
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1;
+  const prefix = text.slice(lineStart, index);
+  return COMMENT_LINE_PREFIX.test(prefix) || COMMENT_LINE_PREFIX.test(lineText);
 }
 
 interface TriageInput {
