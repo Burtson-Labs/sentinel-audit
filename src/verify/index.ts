@@ -80,6 +80,7 @@ export function verify(input: VerifyInput): VerifyResult {
     'SEC-SSRF-FETCH': verifySsrf,
     'SEC-CSP-MISSING': verifyCspAbsence,
     'SEC-SECRET-COMMITTED': verifySecretCommitted,
+    'SEC-SECRET-IN-TEST': verifySecretCommitted,
     'CI-NO-SECURITY-GATE': verifyCiGate,
     'DEP-ADVISORY': verifyAdvisory,
     'DOCKER-ROOT': verifyDockerRoot,

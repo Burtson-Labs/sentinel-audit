@@ -1,6 +1,7 @@
 import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJsonSafe, exists } from './util/fsx.js';
+import { buildTestPathPredicate, type TestPathConfig } from './util/testpaths.js';
 import type { Severity, FindingType, StandardControl } from './types.js';
 
 export interface Profile {
@@ -11,6 +12,13 @@ export interface Profile {
   severityFloor?: Partial<Record<FindingType, Severity>>;
   gate: { blockOn: Severity[]; conditionalOn: Severity[]; note: string };
   controls: Record<string, StandardControl[]>;
+  /**
+   * Which paths count as test/fixture/mock code. Credential and auth-storage
+   * rules report at `Info` there instead of at their headline severity, because
+   * in a test the construct is usually what is being exercised. Every repository
+   * spells these directories differently, so the list is configurable.
+   */
+  testPaths?: TestPathConfig;
 }
 
 export const BUILTIN_PROFILE_IDS = ['owasp-asvs', 'cwe-top-25', 'generic-enterprise'] as const;
@@ -47,10 +55,30 @@ export function loadProfile(idOrPath: string): Profile {
   return raw;
 }
 
+/** The profile's test/fixture path predicate, built once per scan. */
+export function testPathPredicate(profile: Profile): (path: string) => boolean {
+  return buildTestPathPredicate(profile.testPaths);
+}
+
 export function validateProfile(p: Partial<Profile>): string[] {
   const problems: string[] = [];
   if (!p.id) problems.push('missing id');
   if (!p.title) problems.push('missing title');
+  if (p.testPaths) {
+    if (p.testPaths.patterns !== undefined && !Array.isArray(p.testPaths.patterns)) {
+      problems.push('testPaths.patterns must be an array of regex strings');
+    }
+    if (p.testPaths.mode !== undefined && p.testPaths.mode !== 'extend' && p.testPaths.mode !== 'replace') {
+      problems.push('testPaths.mode must be "extend" or "replace"');
+    }
+    for (const src of p.testPaths.patterns ?? []) {
+      try {
+        new RegExp(src);
+      } catch {
+        problems.push(`testPaths.patterns entry is not a valid regular expression: ${src}`);
+      }
+    }
+  }
   if (!p.controls || typeof p.controls !== 'object') problems.push('missing controls map');
   if (!p.gate) problems.push('missing gate');
   else {

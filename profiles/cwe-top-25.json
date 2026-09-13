@@ -6,6 +6,10 @@
   "severityFloor": {
     "Secret": "High"
   },
+  "testPaths": {
+    "mode": "extend",
+    "patterns": []
+  },
   "gate": {
     "blockOn": ["Blocker"],
     "conditionalOn": ["High"],
@@ -94,6 +98,9 @@
     "SEC-SECRET-COMMITTED": [
       { "id": "CWE-798", "title": "Use of Hard-coded Credentials", "url": "https://cwe.mitre.org/data/definitions/798.html" },
       { "id": "CWE-312", "title": "Cleartext Storage of Sensitive Information" }
+    ],
+    "SEC-SECRET-IN-TEST": [
+      { "id": "CWE-798", "title": "Use of Hard-coded Credentials", "url": "https://cwe.mitre.org/data/definitions/798.html" }
     ],
     "SEC-HTTP-ENDPOINT": [
       { "id": "CWE-319", "title": "Cleartext Transmission of Sensitive Information" }

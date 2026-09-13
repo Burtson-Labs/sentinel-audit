@@ -219,6 +219,25 @@ blanked, offsets preserved — so a match is real code rather than a code sample
 docblock. Vendored and bundled artefacts are excluded from the code rules and named
 in the coverage report.
 
+**Test code is read, but not shouted about.** In a test, a credential-shaped
+construct is usually the thing being exercised: a spec called
+`admin-session-hygiene.spec.ts` writes a token to `localStorage` precisely so it can
+assert the token is cleared. So when *every* cited location is a test, spec or
+fixture path, the credential/auth family (`SEC-TOKEN-WEBSTORAGE`,
+`SEC-SECRET-COMMITTED`, `SEC-SECRET-IN-CLIENT-BUNDLE`, `SEC-JWT-CLIENT-TRUST`,
+`SEC-CLIENT-SIDE-AUTHZ`, `DOCKER-SECRET-ARG`) reports at **Info** with `— in test
+code only` in the title and a note saying why, rather than at its headline severity.
+
+Two deliberate limits on that:
+
+- it is **not** a blanket exclusion. A swallowed catch in a test is still a
+  swallowed catch, and a credential-shaped *value* in a fixture still gets an Info
+  `SEC-SECRET-IN-TEST` finding — a production key pasted into a test file is
+  committed exactly like any other;
+- the path list is **configurable per profile** (`testPaths`), because every
+  repository spells these directories differently. See
+  [docs/profiles.md](docs/profiles.md).
+
 ### Cryptographic usage
 
 Checking whether a *primitive* is obsolete — MD5, SHA-1, `Math.random()` — is the

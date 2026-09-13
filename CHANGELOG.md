@@ -43,6 +43,14 @@ share), SARIF (`precision` `very-high` vs `high`, new `proofConfirmed` /
   instead of within rounding distance of it. In the risk matrix, only
   proof-confirmed findings are Likelihood High; pattern-confirmed are Medium.
 
+### Path-aware severity for credential and auth findings
+
+- **A session-hygiene spec is no longer a High "authentication material written to web storage".** `SEC-TOKEN-WEBSTORAGE` cited `frontend/e2e-prod/admin-session-hygiene.spec.ts` — a test whose purpose is exercising session hygiene — at High severity. The credential/auth family (`SEC-TOKEN-WEBSTORAGE`, `SEC-SECRET-COMMITTED`, `SEC-SECRET-IN-CLIENT-BUNDLE`, `SEC-JWT-CLIENT-TRUST`, `SEC-CLIENT-SIDE-AUTHZ`, `DOCKER-SECRET-ARG`) now reports at `Info` when every cited location is a test, spec or fixture path, with `— in test code only` in the title and an explicit note saying why. The Info ceiling is applied *after* the profile's `severityFloor`, which otherwise dragged `Secret` findings back up to High.
+- **Test files are not excluded from every rule.** A swallowed catch, an oversized module or a weak hash in a test still reports at its own severity. Only the credential/auth family is capped.
+- **New `SEC-SECRET-IN-TEST` (Info).** Credential-shaped *values* found in test paths get their own finding instead of inflating the High "credential-shaped values in the working tree" count or vanishing — a real production key pasted into a fixture is still committed. Mapped to a control in all three builtin profiles; the production finding links to it in a note.
+- **The test-path list is configurable per profile** via `testPaths: { mode: "extend" | "replace", patterns: [...] }`. Built-in coverage: `test`/`tests`/`spec`/`specs`/`e2e`/`e2e-*`/`*-tests`/`cypress`/`playwright`/`fixtures`/`mocks`/`stubs`/`testdata`/`test_data`/`__tests__`/`__mocks__`/`__fixtures__` directories, plus `*.test.*`, `*.spec.*`, `*.fixture.*`, `*.mock.*`, `*_test.go`, `test_*.py`, `conftest.py` and `*Tests.cs`-style filenames. An invalid pattern is reported by profile validation, and ignored rather than fatal at scan time.
+- The rule engine and the secret collector now share one notion of "test path", so a repository only has to configure it once. `recon.isTestPath` stays narrower on purpose: it counts test *modules* for the test-to-source ratio, where counting `fixtures/` would flatter the repository.
+
 ### Cryptographic-usage rules
 
 - Four rules for the failures that break a signing or verification library, none of which are about an obsolete primitive:

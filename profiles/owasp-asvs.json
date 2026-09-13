@@ -6,6 +6,10 @@
   "severityFloor": {
     "Secret": "High"
   },
+  "testPaths": {
+    "mode": "extend",
+    "patterns": []
+  },
   "gate": {
     "blockOn": ["Blocker"],
     "conditionalOn": ["High"],
@@ -92,6 +96,9 @@
     "SEC-SECRET-COMMITTED": [
       { "id": "ASVS 2.10.4", "title": "Secrets are stored in a protected secret store, not in source" },
       { "id": "ASVS 14.2.1", "title": "All components are kept free of embedded credentials" }
+    ],
+    "SEC-SECRET-IN-TEST": [
+      { "id": "ASVS 2.10.4", "title": "Secrets are stored in a protected secret store, not in source" }
     ],
     "SEC-HTTP-ENDPOINT": [
       { "id": "ASVS 9.1.1", "title": "All client connectivity uses TLS" }

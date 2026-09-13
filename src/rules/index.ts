@@ -1,6 +1,6 @@
 import { maskSource, type MaskedSource } from '../util/lex.js';
 import { readTextSafe, type RepoFile } from '../util/fsx.js';
-import { isTestPath } from '../collectors/recon.js';
+import { isTestOrFixturePath } from '../util/testpaths.js';
 import type { CollectorRun, RuleHit } from '../types.js';
 import { SECURITY_RULES } from './security.js';
 import { CRYPTO_RULES } from './crypto.js';
@@ -28,8 +28,20 @@ export interface RuleEngineResult {
  * Files are read once and shared, so the cost is one pass over the tree no
  * matter how many rules are registered.
  */
-export function runRules(root: string, files: RepoFile[], options: { maxFileBytes?: number } = {}): RuleEngineResult {
+export function runRules(
+  root: string,
+  files: RepoFile[],
+  options: {
+    maxFileBytes?: number;
+    /**
+     * Which paths count as test/fixture code. Supplied by the profile so a
+     * repository can name its own directories; falls back to the built-in set.
+     */
+    isTest?: (path: string) => boolean;
+  } = {},
+): RuleEngineResult {
   const started = Date.now();
+  const isTest = options.isTest ?? isTestOrFixturePath;
   const texts = new Map<string, string>();
   const masked = new Map<string, MaskedSource>();
   const skipped: string[] = [];
@@ -68,7 +80,7 @@ export function runRules(root: string, files: RepoFile[], options: { maxFileByte
 
   const ruleTexts = new Map(textFiles.map((f) => [f.path, texts.get(f.path)!] as const));
   const ruleMasked = new Map([...masked].filter(([p]) => ruleTexts.has(p)));
-  const repoContext: RuleRepoContext = { root, files: textFiles, texts: ruleTexts, masked: ruleMasked, isTest: isTestPath };
+  const repoContext: RuleRepoContext = { root, files: textFiles, texts: ruleTexts, masked: ruleMasked, isTest };
   const hits: RuleHit[] = [];
   const ruleErrors: string[] = [];
 
@@ -80,7 +92,7 @@ export function runRules(root: string, files: RepoFile[], options: { maxFileByte
           const src = texts.get(f.path);
           const m = masked.get(f.path);
           if (src === undefined || m === undefined) continue;
-          const ctx: RuleFileContext = { file: f, src, masked: m, isTest: isTestPath(f.path), root };
+          const ctx: RuleFileContext = { file: f, src, masked: m, isTest: isTest(f.path), root };
           hits.push(...rule.scan(ctx));
         }
       }

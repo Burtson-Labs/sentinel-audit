@@ -7,6 +7,10 @@
     "Secret": "High",
     "CI-CD": "Medium"
   },
+  "testPaths": {
+    "mode": "extend",
+    "patterns": []
+  },
   "gate": {
     "blockOn": ["Blocker"],
     "conditionalOn": ["High"],
@@ -80,6 +84,9 @@
       { "id": "ENG-SEC-HEADERS-04", "title": "External links drop referrer and opener" }
     ],
     "SEC-SECRET-COMMITTED": [
+      { "id": "ENG-SEC-SECRET-01", "title": "Secrets live in a managed secret store; source control holds none" }
+    ],
+    "SEC-SECRET-IN-TEST": [
       { "id": "ENG-SEC-SECRET-01", "title": "Secrets live in a managed secret store; source control holds none" }
     ],
     "SEC-HTTP-ENDPOINT": [

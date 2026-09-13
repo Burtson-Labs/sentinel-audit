@@ -34,6 +34,18 @@ Copy `profiles/generic-enterprise.json` and replace the control ids. The keys ar
     "CI-CD": "Medium"
   },
 
+  // Which paths are test/fixture/mock code. Credential and auth-storage rules
+  // report at Info there, with an explicit "in test code" note, because in a
+  // test the construct is usually what is being exercised rather than an
+  // exposure. `extend` (the default) appends to the built-in list; `replace`
+  // uses only what you supply, and `replace` with an empty list turns
+  // path-aware severity off. Entries are JavaScript regular-expression sources,
+  // matched case-insensitively against the repo-relative POSIX path.
+  "testPaths": {
+    "mode": "extend",
+    "patterns": ["(^|/)acceptance(/|$)", "(^|/)harness(/|$)"]
+  },
+
   // What the gate does. `sentinel scan` exits 2 when a finding at a blockOn
   // severity is confirmed, and 1 when one is merely present or a conditional
   // severity appears.
@@ -67,7 +79,7 @@ A rule you do not map still appears in the report, with its severity and its ver
 
 ### Validation
 
-`loadProfile` rejects a malformed profile with the specific problem rather than failing later during rendering. Required: `id`, `title`, `controls` (an object), `gate` with `blockOn` and `conditionalOn` arrays. Every control needs `{ id, title }`; `url` is optional.
+`loadProfile` rejects a malformed profile with the specific problem rather than failing later during rendering. Required: `id`, `title`, `controls` (an object), `gate` with `blockOn` and `conditionalOn` arrays. Every control needs `{ id, title }`; `url` is optional. `testPaths.patterns` must be an array of valid regular expressions and `testPaths.mode` must be `extend` or `replace` — a pattern that does not compile is reported here rather than silently ignored at scan time.
 
 ```bash
 node -e "import('./dist/profile.js').then(m => console.log(m.validateProfile(require('./my-company.json'))))"

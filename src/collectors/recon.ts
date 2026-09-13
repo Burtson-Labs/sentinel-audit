@@ -259,6 +259,16 @@ function detectTsConfig(root: string, files: RepoFile[]): { strict: boolean | nu
   return { strict: hasTs ? null : null, hasTs };
 }
 
+/**
+ * Is this a *test module*? Narrower on purpose than
+ * `util/testpaths.isTestOrFixturePath`, which decides severity and drives
+ * `ctx.isTest` in the rules.
+ *
+ * The two are not the same question. This one feeds `testFileCount` and the
+ * test-to-source ratio, and counting `__mocks__` or `fixtures/` as tests would
+ * make a repository look better covered than it is. The other one asks "is a
+ * credential here likely to be scaffolding", where fixtures and mocks belong.
+ */
 export function isTestPath(p: string): boolean {
   return TEST_PATH.test(p);
 }

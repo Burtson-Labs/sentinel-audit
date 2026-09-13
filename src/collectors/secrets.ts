@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { readTextSafe, type RepoFile } from '../util/fsx.js';
 import { maskSecret, shannonEntropy } from '../util/hash.js';
 import { commandExists, run } from '../util/exec.js';
+import { isTestOrFixturePath } from '../util/testpaths.js';
 import type { CollectorRun, SecretCandidate, SecretResult } from '../types.js';
 
 /**
@@ -73,7 +74,12 @@ const NAME_HOLDER = /(?:_KEY|_NAME|_ID|_FIELD|_HEADER|_PARAM|_PREFIX|_LABEL|Key|
 const PLACEHOLDER_WORDS = /(example|sample|placeholder|dummy|changeme|change_me|your[_-]?|my[_-]?secret|redacted|xxxx|todo|fixme|notasecret|test[_-]?(key|token|secret)|fake|mock|lorem|password123|s3cret|secret123|abc123|\bnull\b|\bundefined\b|\bnone\b)/i;
 const TYPE_LIKE = /^(?:string|number|boolean|any|unknown|null|undefined|Record<|Array<|Promise<)/;
 const SAFE_PATH = /(^|\/)(\.env\.example|\.env\.sample|\.env\.template|example\.env|README|CHANGELOG|LICENSE|SECURITY|CONTRIBUTING)/i;
-const TEST_FIXTURE_PATH = /(^|\/)(test|tests|__tests__|__fixtures__|fixtures|spec|e2e|mocks?|examples?|docs?|samples?)(\/|$)/i;
+/**
+ * Documentation and example directories. Test/fixture/mock paths come from the
+ * shared, profile-configurable predicate instead, so "what counts as a test
+ * path" is decided in one place for the whole tool.
+ */
+const DOC_SAMPLE_PATH = /(^|\/)(examples?|docs?|samples?)(\/|$)/i;
 const LOCKFILE = /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|Gemfile\.lock|composer\.lock|go\.sum)$/;
 const MIN_SCAN_EXT = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '.json', '.yml', '.yaml',
@@ -90,7 +96,12 @@ export interface SecretOutput {
 export function collectSecrets(
   root: string,
   files: RepoFile[],
-  options: { useExternalScanner?: boolean; gitignored?: (p: string) => boolean } = {},
+  options: {
+    useExternalScanner?: boolean;
+    gitignored?: (p: string) => boolean;
+    /** Profile-configured test/fixture predicate; defaults to the built-in set. */
+    isTest?: (p: string) => boolean;
+  } = {},
 ): SecretOutput {
   const started = Date.now();
   const candidates: SecretCandidate[] = [];
@@ -106,7 +117,7 @@ export function collectSecrets(
     const text = readTextSafe(f.absolute, 1_000_000);
     if (text === null) continue;
     filesScanned += 1;
-    scanText(f.path, text, candidates, options.gitignored);
+    scanText(f.path, text, candidates, { gitignored: options.gitignored, isTest: options.isTest });
   }
 
   const external = probeExternalScanner(root, options.useExternalScanner ?? true);
@@ -138,10 +149,12 @@ export function scanText(
   path: string,
   text: string,
   out: SecretCandidate[],
-  gitignored?: (p: string) => boolean,
+  options: { gitignored?: (p: string) => boolean; isTest?: (p: string) => boolean } = {},
 ): void {
+  const { gitignored, isTest = isTestOrFixturePath } = options;
   const isExample = SAFE_PATH.test(path) || /\.example$|\.sample$|\.template$/.test(path);
-  const isFixture = TEST_FIXTURE_PATH.test(path);
+  const inTestPath = isTest(path);
+  const isFixture = inTestPath || DOC_SAMPLE_PATH.test(path);
   const lines = text.split('\n');
 
   for (const rule of SECRET_RULES) {
@@ -170,6 +183,7 @@ export function scanText(
         falsePositiveReason: triage.reason,
         inGitignoredPath: gitignored ? gitignored(path) : false,
         isExampleFile: isExample,
+        inTestPath,
       });
       if (m.index === rx.lastIndex) rx.lastIndex += 1;
     }

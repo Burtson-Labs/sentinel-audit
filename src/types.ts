@@ -334,6 +334,12 @@ export interface SecretCandidate {
   falsePositiveReason?: string;
   inGitignoredPath: boolean;
   isExampleFile: boolean;
+  /**
+   * Does the match live in a test, spec, fixture or mock path? A credential
+   * there is reported, but at Info — it is usually scaffolding, and reporting it
+   * at High is how a secret section loses its reader.
+   */
+  inTestPath: boolean;
 }
 
 export interface SecretResult {

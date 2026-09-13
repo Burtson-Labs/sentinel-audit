@@ -6,6 +6,7 @@ import { scoreConfidence, statusClass, statusFromVerification } from './schema.j
 import { ALL_RULES, ruleById } from './rules/index.js';
 import { copyleftDependencies } from './collectors/dependencies.js';
 import { verify, advisoryMeta } from './verify/index.js';
+import { inTestCodeNote, isCredentialSensitiveRule } from './util/testpaths.js';
 import type {
   AdvisoryRecord,
   CodeLocation,
@@ -58,6 +59,13 @@ export interface CandidateFinding {
   /** Preset triage for scanner noise we already know about. */
   triage?: Finding['triage'];
   notes?: string[];
+  /**
+   * Every cited location is in test/spec/fixture code. For the credential and
+   * auth-storage family this caps the severity at Info: in a test, the construct
+   * is usually the subject rather than an exposure. It does not suppress the
+   * finding — see `isCredentialSensitiveRule`.
+   */
+  inTestCodeOnly?: boolean;
 }
 
 export interface AnalyzeOptions {
@@ -134,6 +142,11 @@ export function analyze(ctx: ScanContext, repo: RuleRepoContext, options: Analyz
         );
 
     let severity = applyFloor(options.profile, c.type, c.severity);
+    // Path-aware severity. Deliberately applied *after* the profile floor:
+    // `severityFloor: { Secret: "High" }` would otherwise drag a credential in a
+    // fixture back up to High, which is the exact defect this guards against.
+    const testCodeOnly = c.inTestCodeOnly === true && isCredentialSensitiveRule(c.ruleId);
+    if (testCodeOnly) severity = 'Info';
     if (verified.severityHint === 'lower') severity = lower(severity);
     if (status === 'refuted') severity = 'Info';
 
@@ -145,7 +158,7 @@ export function analyze(ctx: ScanContext, repo: RuleRepoContext, options: Analyz
     const controls = controlsFor(options.profile, c.ruleId);
     const finding: Finding = {
       id,
-      title: c.title,
+      title: testCodeOnly ? `${c.title} — in test code only` : c.title,
       type: c.type,
       severity,
       suggestedLabels: c.labels,
@@ -189,7 +202,11 @@ export function analyze(ctx: ScanContext, repo: RuleRepoContext, options: Analyz
       confidence: 0,
       fingerprint: fingerprint([c.ruleId, c.hits[0]?.file, c.hits[0]?.line, c.title]),
       triage: c.triage,
-      notes: [...(c.notes ?? []), ...verified.notes],
+      notes: [
+        ...(c.notes ?? []),
+        ...(testCodeOnly ? [inTestCodeNote(Array.from(new Set(c.hits.map((h) => h.file))), c.ruleId)] : []),
+        ...verified.notes,
+      ],
     };
     finding.confidence = scoreConfidence(finding);
     findings.push(finding);
@@ -255,6 +272,7 @@ function candidatesFromRules(ctx: ScanContext): CandidateFinding[] {
       source: 'rule',
       hits: ranked,
       locations: shown.map((h) => ({ file: h.file, startLine: h.line, endLine: h.endLine, excerpt: h.excerpt })),
+      inTestCodeOnly: testOnlyFinding,
       triage: testOnlyFinding
         ? {
             suppressed: true,
@@ -421,7 +439,13 @@ function worstRank(group: AdvisoryRecord[]): number {
 
 function candidatesFromSecrets(ctx: ScanContext): CandidateFinding[] {
   const { candidates } = ctx.secrets;
-  const live = candidates.filter((c) => !c.likelyFalsePositive);
+  const allLive = candidates.filter((c) => !c.likelyFalsePositive);
+  // Test/fixture paths are split out rather than dropped. A credential in a spec
+  // is usually scaffolding, so it does not belong in a High finding next to a
+  // production leak — but it is still a credential-shaped value in the tree, so
+  // it gets its own Info finding instead of disappearing.
+  const live = allLive.filter((c) => !c.inTestPath);
+  const liveInTests = allLive.filter((c) => c.inTestPath);
   const suppressed = candidates.filter((c) => c.likelyFalsePositive);
   const out: CandidateFinding[] = [];
 
@@ -454,6 +478,48 @@ function candidatesFromSecrets(ctx: ScanContext): CandidateFinding[] {
         excerpt: c.masked,
         message: `${c.description} (masked: ${c.masked})`,
         meta: { entropy: c.entropy, ruleId: c.ruleId, isExample: c.isExampleFile },
+      })),
+      locations: shown.map((c) => ({ file: c.file, startLine: c.line, excerpt: `${c.description}: ${c.masked}` })),
+      notes:
+        liveInTests.length > 0
+          ? [`${liveInTests.length} further credential-shaped value(s) in test/fixture paths are reported separately at Info, so test scaffolding does not inflate this count.`]
+          : undefined,
+    });
+  }
+
+  if (liveInTests.length > 0) {
+    const shown = liveInTests.slice(0, 8);
+    out.push({
+      ruleId: 'SEC-SECRET-IN-TEST',
+      title: `${liveInTests.length} credential-shaped value(s) in test or fixture code`,
+      type: 'Secret',
+      // Info, not High: see the severity note in util/testpaths.ts. The profile's
+      // `Secret: High` floor is deliberately bypassed for this rule.
+      severity: 'Info',
+      area: 'Tests',
+      labels: ['secrets', 'tests'],
+      evidence:
+        shown.map((c) => `${c.file}:${c.line} — ${c.description} (${c.masked}, entropy ${c.entropy})`).join('; ') +
+        (liveInTests.length > 8 ? ` (+${liveInTests.length - 8} more)` : ''),
+      why:
+        'A credential-shaped value in a test is usually a literal the test needs, and reporting it at High is how a secret section stops being read. It is still worth one Info line, for the case it is not scaffolding: a real production key pasted into a fixture is in the repository and in its history exactly like any other committed credential.',
+      recommendation:
+        'Read each value once. Anything that was ever valid against a real system must be rotated like any other leak; everything else should be an obviously-fake constant (`test-token`, `sk_test_…`) so the next scan — and the next reviewer — can tell at a glance.',
+      acceptance: [
+        'no value in a test path was ever valid against a real system',
+        'test credentials are obviously synthetic, so a future scan can dismiss them on sight',
+      ],
+      effort: 'S',
+      claimType: 'factual',
+      source: 'collector',
+      inTestCodeOnly: true,
+      hits: shown.map((c) => ({
+        ruleId: 'SEC-SECRET-IN-TEST',
+        file: c.file,
+        line: c.line,
+        excerpt: c.masked,
+        message: `${c.description} in test code (masked: ${c.masked})`,
+        meta: { entropy: c.entropy, ruleId: c.ruleId, inTest: true },
       })),
       locations: shown.map((c) => ({ file: c.file, startLine: c.line, excerpt: `${c.description}: ${c.masked}` })),
     });

@@ -15,7 +15,7 @@ import { renderReport, renderConfidence, renderCoverage } from './report/markdow
 import { renderHtml } from './report/html.js';
 import { buildSarif } from './report/sarif.js';
 import { validateFindings, scoreConfidence, isConfirmed } from './schema.js';
-import { loadProfile, type Profile } from './profile.js';
+import { loadProfile, testPathPredicate, type Profile } from './profile.js';
 import { ensureDir, writeFileEnsured, exists } from './util/fsx.js';
 import type { ConfidenceAssessment, Finding, ScanContext } from './types.js';
 import type { ValidationIssue } from './schema.js';
@@ -77,7 +77,8 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
 
   progress('secrets…');
   const gitignored = gitignoredPredicate(root, reconOut.files.map((f) => f.path).slice(0, 5000));
-  const secretsOut = collectSecrets(root, reconOut.files, { gitignored });
+  const isTest = testPathPredicate(profile);
+  const secretsOut = collectSecrets(root, reconOut.files, { gitignored, isTest });
 
   progress('ci workflows…');
   const ciOut = collectCi(root, reconOut.recon.workflows);
@@ -86,7 +87,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
   const dockerOut = collectDocker(root, reconOut.recon.dockerfiles);
 
   progress('rules…');
-  const rulesOut = runRules(root, reconOut.files);
+  const rulesOut = runRules(root, reconOut.files, { isTest });
 
   const provider = detectProvider({ disabled: options.noLlm, banditCli: options.banditCli });
 
