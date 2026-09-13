@@ -758,6 +758,29 @@ describe('SEC-POSTMESSAGE-ORIGIN', () => {
   });
 });
 
+describe('SEC-TARGET-BLANK', () => {
+  it('accepts rel="noopener"', () => {
+    expect(scan('SEC-TARGET-BLANK', 'src/a.tsx', '<a href={url} target="_blank" rel="noopener">docs</a>\n')).toHaveLength(0);
+  });
+
+  /** noreferrer implies noopener per spec, so demanding the literal token is advice that changes nothing. */
+  it('accepts rel="noreferrer" on its own', () => {
+    expect(scan('SEC-TARGET-BLANK', 'src/a.tsx', '<a href={url} target="_blank" rel="noreferrer">docs</a>\n')).toHaveLength(0);
+    expect(scan('SEC-TARGET-BLANK', 'index.html', '<a href="/docs" target="_blank" rel="noreferrer">docs</a>\n')).toHaveLength(0);
+    expect(scan('SEC-TARGET-BLANK', 'src/a.tsx', '<a href={url} target="_blank" rel="noopener noreferrer">docs</a>\n')).toHaveLength(0);
+  });
+
+  it('still flags an anchor with no rel at all', () => {
+    const hits = scan('SEC-TARGET-BLANK', 'src/a.tsx', '<a href={url} target="_blank">docs</a>\n');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.message).toMatch(/noreferrer/);
+  });
+
+  it('still flags a rel that carries neither token', () => {
+    expect(scan('SEC-TARGET-BLANK', 'src/a.tsx', '<a href={url} target="_blank" rel="nofollow">docs</a>\n')).toHaveLength(1);
+  });
+});
+
 describe('aggregate rules', () => {
   it('QUA-SWALLOWED-CATCH finds an empty catch and an explained one', () => {
     const hits = aggregate('QUA-SWALLOWED-CATCH', {

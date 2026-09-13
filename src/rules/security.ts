@@ -941,9 +941,10 @@ export const targetBlankRule: Rule = {
   area: 'UI',
   labels: ['security', 'ui'],
   claimType: 'factual',
-  why: 'Without `rel="noopener"`, the opened page receives a handle to your window and can navigate it. Modern browsers imply noopener for `target="_blank"`, so this is hardening and older embedded webviews rather than a live hole.',
-  recommendation: 'Add `rel="noopener noreferrer"` to every `target="_blank"` anchor.',
-  acceptance: ['every target="_blank" anchor carries rel="noopener noreferrer"', 'a lint rule enforces it'],
+  why:
+    'Without opener protection, the opened page receives a handle to your window and can navigate it. Modern browsers imply noopener for `target="_blank"`, so this is hardening and older embedded webviews rather than a live hole. `rel="noreferrer"` satisfies it too: the spec makes noreferrer imply noopener, so a link carrying either token is protected.',
+  recommendation: 'Add `rel="noopener noreferrer"` to every `target="_blank"` anchor. Either token alone drops the opener; both also drop the Referer header.',
+  acceptance: ['every target="_blank" anchor carries rel="noopener" or rel="noreferrer"', 'a lint rule enforces it'],
   effort: 'S',
   appliesTo: (f) => JS_TS(f) || f.ext === '.html',
   scan: (ctx) => {
@@ -954,8 +955,13 @@ export const targetBlankRule: Rule = {
     const searchSpace = { ...ctx.masked, code: ctx.masked.codeAndStrings };
     for (const m of matchCode(ctx.src, searchSpace, /target\s*=\s*["'{]?\s*_blank/g)) {
       const region = ctx.src.slice(Math.max(0, m.index - 300), m.index + 300);
-      if (/rel\s*=\s*["'{]?[^"'}]*noopener/.test(region)) continue;
-      hits.push(hit(targetBlankRule.id, ctx.file.path, m.line, excerpt(m.lineText), 'target="_blank" without rel="noopener"', { inTest: ctx.isTest }));
+      // `noreferrer` implies `noopener` — the HTML spec says so, and every
+      // browser that implements one implements the implication. A rule that
+      // tests only for the literal string `noopener` reports `rel="noreferrer"`
+      // as missing opener protection, which is advice to add a token that
+      // changes nothing.
+      if (/rel\s*=\s*["'{]?[^"'}]*\b(?:noopener|noreferrer)\b/.test(region)) continue;
+      hits.push(hit(targetBlankRule.id, ctx.file.path, m.line, excerpt(m.lineText), 'target="_blank" without rel="noopener" or rel="noreferrer"', { inTest: ctx.isTest }));
     }
     return hits;
   },
