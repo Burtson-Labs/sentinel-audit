@@ -45,7 +45,7 @@ jobs:
         id: sentinel
         continue-on-error: true
         run: |
-          npx --yes sentinel-audit scan . \
+          npx --yes @burtson-labs/sentinel-audit scan . \
             --profile owasp-asvs \
             --out sentinel-results \
             --format md,html,json,sarif \

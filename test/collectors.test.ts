@@ -642,8 +642,9 @@ describe('a Sentinel scan on pull requests is an audit gate', () => {
     expect(s.gates.secrets).toBe(false);
   });
 
-  it('counts a global install and the build-output invocation', () => {
+  it('counts a global install, the scoped package, and the build-output invocation', () => {
     expect(summariseWorkflow('.github/workflows/audit.yml', wf('sentinel scan .')).gates.audit).toBe(true);
+    expect(summariseWorkflow('.github/workflows/audit.yml', wf('npx --yes @burtson-labs/sentinel-audit scan . --no-llm')).gates.audit).toBe(true);
     expect(summariseWorkflow('.github/workflows/ci.yml', wf('node dist/cli.js scan . --format sarif')).gates.audit).toBe(true);
   });
 

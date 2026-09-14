@@ -1,5 +1,5 @@
 {
-  "name": "sentinel-audit",
+  "name": "@burtson-labs/sentinel-audit",
   "version": "0.1.0",
   "description": "AI-driven repository audit: verified security, quality and supply-chain findings with runnable proofs, agent-executable fix plans, and SARIF output.",
   "license": "MIT",
@@ -23,6 +23,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",

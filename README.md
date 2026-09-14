@@ -62,6 +62,12 @@ confirmed share of live findings: 82% · proven by execution: 14%
 
 ```bash
 # Node >= 22.6 required — the proof runner uses native TypeScript type stripping
+
+# from npm: installs the `sentinel` command
+npm i -g @burtson-labs/sentinel-audit
+sentinel scan ../some-repo --out ./results
+
+# or from source
 git clone https://github.com/Burtson-Labs/sentinel-audit.git
 cd sentinel-audit && pnpm install && pnpm build
 

@@ -89,6 +89,12 @@ Test fixtures no longer carry a live PostHog project key copied from a scanned
 public repository, or the name of a private one; the synthetic replacements keep
 the same shape and entropy.
 
+### Package name: `@burtson-labs/sentinel-audit`
+
+The package is scoped to Burtson Labs. The workflow template and the README
+install it by that name; the command it installs is still `sentinel`, and
+reports still identify the tool as `sentinel-audit`.
+
 ### Honest verification vocabulary (breaking change to `status` values)
 
 A finding whose only verification was re-running a static assertion used to carry
