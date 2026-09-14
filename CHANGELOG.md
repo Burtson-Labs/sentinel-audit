@@ -95,6 +95,13 @@ The package is scoped to Burtson Labs. The workflow template and the README
 install it by that name; the command it installs is still `sentinel`, and
 reports still identify the tool as `sentinel-audit`.
 
+Published from CI on every push to main (`publish.yml`): the `burtson-labs-runners`
+pool, the organisation's `NPM_TOKEN`, and a guard that skips a version already on
+the registry, so only a version bump publishes. Two CI fixes on the way: the pnpm
+setup action rejects a `version` input when package.json declares `packageManager`,
+and the SARIF upload on a private repository needs `actions: read` and is no
+longer allowed to fail the self-scan gate.
+
 ### Honest verification vocabulary (breaking change to `status` values)
 
 A finding whose only verification was re-running a static assertion used to carry

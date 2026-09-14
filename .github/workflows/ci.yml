@@ -55,6 +55,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      actions: read # the SARIF upload reads the workflow run on private repositories
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -81,7 +82,11 @@ jobs:
             --no-llm
 
       - name: Upload SARIF
+        # A convenience, not the gate: a private repository without Advanced
+        # Security cannot accept code-scanning uploads, and that must not mask
+        # the scan result asserted below.
         if: always() && hashFiles('.sentinel/report.sarif') != ''
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.38.0
         with:
           sarif_file: .sentinel/report.sarif
