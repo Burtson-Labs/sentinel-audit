@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { maskSource, matchCode, lineNumberFor, sourceLine } from '../src/util/lex.js';
+import { maskSource, matchCode, lineNumberFor, sourceLine, looksLikeProse } from '../src/util/lex.js';
 
 describe('maskSource', () => {
   it('preserves offsets so line numbers stay correct', () => {
@@ -138,5 +138,66 @@ describe('regex literals are patterns, not values', () => {
     const src = `const cfg = { rejectUnauthorized: false };\n`;
     const m = maskSource(src);
     expect(m.codeAndStrings).toContain('rejectUnauthorized: false');
+  });
+});
+
+describe('codeAndValues: a sentence in a literal is not a value', () => {
+  it('blanks a prose literal but keeps short values and shell commands', () => {
+    const src = [
+      "const why = 'A message listener that does not check event.origin accepts instructions from any frame, and postMessage(data, \"*\") broadcasts the payload';",
+      "const url = 'http://api.internal:8080/v1';",
+      "const cmd = 'NODE_TLS_REJECT_UNAUTHORIZED=0 node dist/server.js';",
+      '',
+    ].join('\n');
+    const m = maskSource(src);
+    expect(m.codeAndValues).toHaveLength(src.length);
+    expect(m.codeAndStrings).toContain('postMessage(data');
+    expect(m.codeAndValues).not.toContain('postMessage(data');
+    expect(m.codeAndValues).toContain('http://api.internal:8080/v1');
+    expect(m.codeAndValues).toContain('NODE_TLS_REJECT_UNAUTHORIZED=0 node dist/server.js');
+    // the quotes stay, so a rule can still tell a literal was here
+    expect(m.codeAndValues[12]).toBe("'");
+  });
+
+  it('keeps interpolations inside a prose template as code', () => {
+    const src = 'const msg = `The request to ${target.url} failed after three attempts and will not be retried again`;\n';
+    const m = maskSource(src);
+    expect(m.codeAndValues).toHaveLength(src.length);
+    expect(m.codeAndValues).toContain('target.url');
+    expect(m.codeAndValues).not.toContain('retried');
+    expect(m.code).toContain('target.url');
+  });
+
+  it('leaves codeAndStrings untouched, so the secret scanner still sees every literal', () => {
+    const src = "const note = 'rotate the token below before the end of the sprint, then delete this line';\n";
+    const m = maskSource(src);
+    expect(m.codeAndStrings).toContain('rotate the token');
+    expect(m.codeAndValues).not.toContain('rotate the token');
+  });
+
+  it('blanks the string body only — line structure and offsets are preserved', () => {
+    const src = "a();\nconst s = 'this sentence spans a single line and is long enough to count as prose';\nb();\n";
+    const m = maskSource(src);
+    expect(m.codeAndValues.split('\n')).toHaveLength(src.split('\n').length);
+    expect(m.codeAndValues).toContain('a();');
+    expect(m.codeAndValues).toContain('b();');
+  });
+});
+
+describe('looksLikeProse', () => {
+  it('accepts sentences, including ones that quote code', () => {
+    expect(looksLikeProse('no rejectUnauthorized:false and no NODE_TLS_REJECT_UNAUTHORIZED=0 in shipped code')).toBe(true);
+    expect(looksLikeProse('NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate validation process-wide')).toBe(true);
+    expect(looksLikeProse('Replace each flagged weak primitive. createHash("md5"|"sha1") becomes createHash("sha256") unless the value is a cache key.')).toBe(true);
+  });
+
+  it('rejects short values, commands, paths, flags and URLs however wordy', () => {
+    expect(looksLikeProse('http://api.internal:8080/v1')).toBe(false);
+    expect(looksLikeProse('NODE_TLS_REJECT_UNAUTHORIZED=0 node dist/server.js')).toBe(false);
+    expect(looksLikeProse('please run the build with --insecure and then restart the whole thing')).toBe(false);
+    expect(looksLikeProse('copy every file from ./build into the deploy directory and then restart')).toBe(false);
+    expect(looksLikeProse('see the docs at https://example.com/setup before you start the server')).toBe(false);
+    expect(looksLikeProse('SELECT id, name FROM users WHERE email = ? AND status = ? ORDER BY id')).toBe(false);
+    expect(looksLikeProse('short note here')).toBe(false);
   });
 });

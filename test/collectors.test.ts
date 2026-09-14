@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { parseAuditJson, copyleftDependencies } from '../src/collectors/dependencies.js';
-import { scanText, triageCandidate, documentationLoopbackHost, SECRET_RULES } from '../src/collectors/secrets.js';
+import { scanText, triageCandidate, documentationLoopbackHost, looksLikeSentence, SECRET_RULES } from '../src/collectors/secrets.js';
 import { summariseWorkflow, gateSatisfied } from '../src/collectors/ci.js';
+import { redactRepoUrl } from '../src/collectors/recon.js';
+import { candidatesFromLicenses } from '../src/analyze.js';
+import type { ScanContext } from '../src/types.js';
 import { analyseDockerfile } from '../src/collectors/docker.js';
 import { parseYaml, tryParseYaml } from '../src/util/yaml.js';
 import { satisfies, compare, parse as parseSemver } from '../src/util/semver.js';
@@ -209,9 +212,11 @@ describe('documented loopback connection strings', () => {
   });
 
   it('keeps a loopback credential in real source or configuration', () => {
-    const inSource = run('src/db.ts', `const url = 'postgres://readonly_user:secret@localhost:5432/appdb';\n`);
+    // a real-looking password: the literal word "secret" is a placeholder and
+    // is dismissed on its own terms, whatever the host (see below)
+    const inSource = run('src/db.ts', `const url = 'postgres://readonly_user:Hx7tQ2pL9sF4@localhost:5432/appdb';\n`);
     expect(inSource.some((h) => !h.likelyFalsePositive)).toBe(true);
-    const inConfig = run('config/database.yml', `url: postgres://readonly_user:secret@localhost:5432/appdb\n`);
+    const inConfig = run('config/database.yml', `url: postgres://readonly_user:Hx7tQ2pL9sF4@localhost:5432/appdb\n`);
     expect(inConfig.some((h) => !h.likelyFalsePositive)).toBe(true);
   });
 
@@ -531,5 +536,161 @@ describe('secret-scanning coverage statements are mutually exclusive', () => {
       expect(n2).toMatch(/not re-der\w+ (?:as Sentinel findings|the)|relayed and triaged/);
     }
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('shapes that are not credentials, wherever they appear', () => {
+  const run = (path: string, text: string): SecretCandidate[] => {
+    const out: SecretCandidate[] = [];
+    scanText(path, text, out);
+    return out;
+  };
+  // Sentinel's self-scan led its High secret finding with a *comment* quoting
+  // `postgres://readonly_user:secret@localhost` and a gate description assigned
+  // to `secrets:`; a real .NET scan led with a PEM header being stripped off a
+  // key the code was given. None of the three is something to rotate.
+  it('dismisses the placeholder word used as a connection-string password, on any host and path', () => {
+    for (const [path, line] of [
+      ['src/collectors/secrets.ts', '  // instruction: "export DATABASE_URL=postgres://readonly_user:secret@localhost:5432/appdb"'],
+      ['src/util/hosts.ts', ' * `postgres://user:pass@localhost:5432/db` as a committed credential. The regex'],
+      ['src/db.ts', "const url = 'mysql://app:password@db.internal:3306/app';"],
+    ] as const) {
+      const hits = run(path, `${line}\n`);
+      expect(hits.length, line).toBeGreaterThan(0);
+      expect(hits.every((h) => h.likelyFalsePositive), line).toBe(true);
+      expect(hits[0]!.falsePositiveReason, line).toMatch(/placeholder word/);
+    }
+  });
+
+  it('dismisses a credential written with an ellipsis, and the documentation word "token", for any rule', () => {
+    // both lines are Sentinel's own: a changelog entry and a docblock explaining
+    // why the remote URL is redacted before it is recorded
+    for (const [path, line] of [
+      ['CHANGELOG.md', '  artefacts. A remote configured as `https://x-access-token:ghp_…@github.com/…`,'],
+      ['src/collectors/recon.ts', ' * `https://user:token@github.com/org/repo` is how many CI systems, credential'],
+      ['docs/setup.md', 'AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCY..."'],
+    ] as const) {
+      const hits = run(path, `${line}\n`);
+      expect(hits.length, line).toBeGreaterThan(0);
+      expect(hits.every((h) => h.likelyFalsePositive), line).toBe(true);
+    }
+    const real = run('src/ci.ts', "const remote = 'https://x-access-token:ghp_" + 'b'.repeat(36) + "@github.com/o/r.git';\n");
+    expect(real.some((h) => !h.likelyFalsePositive)).toBe(true);
+  });
+
+  it('still reports a connection string whose password is not a placeholder, even on localhost in source', () => {
+    const hits = run('src/db.ts', "const url = 'postgres://app:Hx7tQ2pL9sF4@localhost:5432/app';\n");
+    expect(hits.some((h) => !h.likelyFalsePositive)).toBe(true);
+  });
+
+  it('dismisses a sentence assigned to a secret-shaped name', () => {
+    const hits = run('src/report/markdown.ts', "    secrets: 'secret scanning over history, not just the working tree',\n");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.likelyFalsePositive)).toBe(true);
+    expect(hits[0]!.falsePositiveReason).toMatch(/sentence/);
+  });
+
+  it('looksLikeSentence needs four spaced tokens, mostly words', () => {
+    expect(looksLikeSentence('secret scanning over history, not just the working tree')).toBe(true);
+    expect(looksLikeSentence('Hx7tQ2pL9sF4kT5vB9mL2pR7')).toBe(false);
+    expect(looksLikeSentence('correct horse')).toBe(false);
+    expect(looksLikeSentence('a1 b2 c3 d4 e5 f6')).toBe(false);
+  });
+
+  it('dismisses a PEM header used as a string token, but not one that opens a key', () => {
+    const token = run('AuthApi/Services/OAuthService.cs', '                .Replace("-----BEGIN PRIVATE KEY-----", "")\n');
+    expect(token.length).toBeGreaterThan(0);
+    expect(token.every((h) => h.likelyFalsePositive)).toBe(true);
+    expect(token[0]!.falsePositiveReason).toMatch(/string token/);
+
+    const startsWith = run('src/keys.ts', "if (!pem.startsWith('-----BEGIN RSA PRIVATE KEY-----')) throw new Error('not a key');\n");
+    expect(startsWith.every((h) => h.likelyFalsePositive)).toBe(true);
+
+    const block = run('config/signing.pem', '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn\n-----END RSA PRIVATE KEY-----\n');
+    expect(block.some((h) => !h.likelyFalsePositive)).toBe(true);
+
+    const literal = run('src/keys.ts', "const KEY = '-----BEGIN PRIVATE KEY-----\\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn\\n-----END PRIVATE KEY-----';\n");
+    expect(literal.some((h) => !h.likelyFalsePositive)).toBe(true);
+  });
+});
+
+describe('the recorded repository URL never carries credentials', () => {
+  // The URL is written into REPORT.md, CONFIDENCE.md, scan-context.json and the
+  // SARIF repositoryUri, and those are uploaded as CI artefacts.
+  it('strips a username, a username:token pair, and a bare token', () => {
+    expect(redactRepoUrl('https://markymarkburt@github.com/Burtson-Labs/sentinel-audit.git')).toBe('https://github.com/Burtson-Labs/sentinel-audit.git');
+    expect(redactRepoUrl('https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r.git')).toBe('https://github.com/o/r.git');
+    expect(redactRepoUrl('https://oauth2:glpat-abc123@gitlab.com/o/r.git')).toBe('https://gitlab.com/o/r.git');
+  });
+
+  it('leaves ssh forms and credential-free URLs alone', () => {
+    expect(redactRepoUrl('git@github.com:o/r.git')).toBe('git@github.com:o/r.git');
+    expect(redactRepoUrl('ssh://git@github.com/o/r.git')).toBe('ssh://git@github.com/o/r.git');
+    expect(redactRepoUrl('https://github.com/o/r.git')).toBe('https://github.com/o/r.git');
+    expect(redactRepoUrl('unknown')).toBe('unknown');
+  });
+});
+
+describe('a Sentinel scan on pull requests is an audit gate', () => {
+  const wf = (run: string): string =>
+    ['name: audit', 'on:', '  pull_request:', 'jobs:', '  audit:', '    runs-on: ubuntu-latest', '    steps:', '      - uses: actions/checkout@v4', `      - run: ${run}`, ''].join('\n');
+
+  it('counts the shipped template invocation as sast and audit, not secrets', () => {
+    const s = summariseWorkflow('.github/workflows/audit.yml', wf('npx --yes sentinel-audit scan . --profile owasp-asvs --no-llm'));
+    expect(s.gates.sast).toBe(true);
+    expect(s.gates.audit).toBe(true);
+    expect(s.gates.secrets).toBe(false);
+  });
+
+  it('counts a global install and the build-output invocation', () => {
+    expect(summariseWorkflow('.github/workflows/audit.yml', wf('sentinel scan .')).gates.audit).toBe(true);
+    expect(summariseWorkflow('.github/workflows/ci.yml', wf('node dist/cli.js scan . --format sarif')).gates.audit).toBe(true);
+  });
+
+  it('does not count --offline as an audit, because no advisories are fetched', () => {
+    const s = summariseWorkflow('.github/workflows/audit.yml', wf('npx --yes sentinel-audit scan . --offline'));
+    expect(s.gates.sast).toBe(true);
+    expect(s.gates.audit).toBe(false);
+  });
+
+  it('does not count a soft-failed scan', () => {
+    expect(summariseWorkflow('.github/workflows/audit.yml', wf('npx --yes sentinel-audit scan . || true')).gates.audit).toBe(false);
+  });
+
+  it('counts a continue-on-error scan whose recorded outcome a later step re-asserts — the template idiom', () => {
+    const steps = [
+      '      - uses: actions/checkout@v4',
+      '      - name: Run sentinel',
+      '        id: sentinel',
+      '        continue-on-error: true',
+      '        run: npx --yes sentinel-audit scan . --no-llm',
+      '      - name: Upload SARIF',
+      '        if: always()',
+      '        uses: github/codeql-action/upload-sarif@v3',
+    ];
+    const enforce = ['      - name: Enforce the gate', '        if: always()', '        run: test "${{ steps.sentinel.outcome }}" = "success"'];
+    const head = ['name: audit', 'on:', '  pull_request:', 'jobs:', '  audit:', '    runs-on: ubuntu-latest', '    steps:'];
+    const withEnforce = summariseWorkflow('.github/workflows/audit.yml', [...head, ...steps, ...enforce, ''].join('\n'));
+    expect(withEnforce.gates.audit).toBe(true);
+    expect(withEnforce.gates.sast).toBe(true);
+
+    const without = summariseWorkflow('.github/workflows/audit.yml', [...head, ...steps, ''].join('\n'));
+    expect(without.gates.audit, 'a soft-failed step nobody re-asserts is not a gate').toBe(false);
+
+    const expression = ['      - name: Enforce', "        if: steps.sentinel.outcome == 'success'", '        run: echo ok'];
+    const viaIf = summariseWorkflow('.github/workflows/audit.yml', [...head, ...steps, ...expression, ''].join('\n'));
+    expect(viaIf.gates.audit, 'an if-expression gates nothing — the job still succeeds').toBe(false);
+  });
+});
+
+describe('licence findings cite the artefact they were read from', () => {
+  it('evidence names package.json, so the finding passes the schema check it used to fail', () => {
+    const ctx = {
+      deps: { dependencies: [{ name: 'gpl-thing', version: '2.0.0', dev: false, license: 'GPL-3.0-only', direct: true }] },
+    } as unknown as ScanContext;
+    const [c] = candidatesFromLicenses(ctx);
+    expect(c).toBeDefined();
+    expect(c!.evidence).toMatch(/^package\.json/);
+    expect(c!.evidence).toContain('gpl-thing@2.0.0 — GPL-3.0-only');
   });
 });

@@ -165,7 +165,7 @@ export function collectRecon(root: string): ReconOutput {
 
   const recon: ReconResult = {
     root,
-    repoUrl: gitUrl.ok ? gitUrl.stdout.trim() : normaliseRepoUrl(pkg?.repository) || 'unknown',
+    repoUrl: redactRepoUrl(gitUrl.ok ? gitUrl.stdout.trim() : normaliseRepoUrl(pkg?.repository) || 'unknown'),
     branch: branch.ok ? branch.stdout.trim() : 'unknown',
     commitSha: sha.ok ? sha.stdout.trim() : 'unknown',
     commitDate: commitDate.ok ? commitDate.stdout.trim() : 'unknown',
@@ -198,6 +198,21 @@ export function collectRecon(root: string): ReconOutput {
       notExamined,
     },
   };
+}
+
+/**
+ * Strip the userinfo from a remote URL before it is recorded anywhere.
+ *
+ * `https://user:token@github.com/org/repo` is how many CI systems, credential
+ * helpers and `gh` clones configure `origin`, and the URL is written into
+ * every artefact — REPORT.md, CONFIDENCE.md, scan-context.json, the SARIF
+ * `repositoryUri` — which are then uploaded as build artefacts. A security
+ * scanner must not be the thing that publishes the token. The host and path
+ * identify the repository; the bare `git@` of an ssh URL carries nothing and is
+ * kept.
+ */
+export function redactRepoUrl(url: string): string {
+  return url.replace(/^([a-z][a-z0-9+.-]*:\/\/)(?!git@)[^/@\s]+@/i, '$1');
 }
 
 function normaliseRepoUrl(repo: PackageJson['repository']): string {

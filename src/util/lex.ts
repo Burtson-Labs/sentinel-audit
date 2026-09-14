@@ -27,6 +27,21 @@ export interface MaskedSource {
    * wrong.
    */
   codeAndStrings: string;
+  /**
+   * Same length as the input; comments blanked, and every string literal whose
+   * body reads as a *sentence* blanked with them.
+   *
+   * This is the search space for rules about values. A value — a URL, an
+   * algorithm name, a storage key, a shell command — is a short literal. A
+   * literal that is a sentence is prose that happens to live in a string: an
+   * error message, a help text, a rule description. The constructs a scanner
+   * hunts for appear in prose exactly when the prose is *about* them
+   * (`createHash("md5") becomes createHash("sha256")`), which is how a
+   * security tool ends up reporting its own rule definitions, and how a CLI's
+   * help text becomes a finding. Template interpolations inside a prose
+   * literal stay visible: they are code.
+   */
+  codeAndValues: string;
   /** 0-based offsets of lines, for fast line lookup. */
   lineStarts: number[];
 }
@@ -43,6 +58,9 @@ export function maskSource(src: string): MaskedSource {
   const both = new Array<string>(n);
   for (let i = 0; i < n; i += 1) both[i] = src[i]!;
   const lineStarts: number[] = [0];
+  // [start, end) of every string/template literal body, for the prose pass.
+  const literalSpans: Array<[number, number]> = [];
+  let literalStart = -1;
 
   let mode: Mode = 'code';
   let templateDepth = 0;
@@ -74,18 +92,21 @@ export function maskSource(src: string): MaskedSource {
         }
         if (ch === "'") {
           mode = 'single';
+          literalStart = i + 1;
           code[i] = ch; // keep the quote so rules can see a literal was here
           strings[i] = SPACE;
           continue;
         }
         if (ch === '"') {
           mode = 'double';
+          literalStart = i + 1;
           code[i] = ch;
           strings[i] = SPACE;
           continue;
         }
         if (ch === '`') {
           mode = 'template';
+          literalStart = i + 1;
           templateDepth = 0;
           code[i] = ch;
           strings[i] = SPACE;
@@ -136,6 +157,7 @@ export function maskSource(src: string): MaskedSource {
           continue;
         }
         if (ch === quote) {
+          literalSpans.push([literalStart, i]);
           code[i] = ch;
           strings[i] = SPACE;
           mode = 'code';
@@ -178,6 +200,7 @@ export function maskSource(src: string): MaskedSource {
           continue;
         }
         if (ch === '`') {
+          literalSpans.push([literalStart, i]);
           code[i] = ch;
           strings[i] = SPACE;
           mode = 'code';
@@ -219,14 +242,62 @@ export function maskSource(src: string): MaskedSource {
     }
   }
 
+  if (literalStart >= 0 && (mode === 'single' || mode === 'double' || mode === 'template')) {
+    literalSpans.push([literalStart, n]); // unterminated literal runs to EOF
+  }
+
+  // Prose pass: blank the body of every literal that reads as a sentence.
+  // Only positions the `strings` view owns are touched, so template
+  // interpolations (real code) survive inside a prose template.
+  const values = both.slice();
+  for (const [start, end] of literalSpans) {
+    if (end - start < PROSE_MIN_CHARS) continue;
+    let body = '';
+    for (let k = start; k < end; k += 1) body += strings[k] === '\n' ? ' ' : strings[k]!;
+    if (!looksLikeProse(body)) continue;
+    for (let k = start; k < end; k += 1) {
+      if (strings[k] !== SPACE && strings[k] !== '\n') values[k] = SPACE;
+    }
+  }
+
   // de-duplicate / sort lineStarts (template interpolation can push twice)
   const uniqueStarts = Array.from(new Set(lineStarts)).sort((a, b) => a - b);
   return {
     code: code.join(''),
     strings: strings.join(''),
     codeAndStrings: both.join(''),
+    codeAndValues: values.join(''),
     lineStarts: uniqueStarts,
   };
+}
+
+const PROSE_MIN_CHARS = 40;
+const PROSE_MIN_TOKENS = 5;
+/**
+ * A token that means "this string may be executed, queried or dereferenced,
+ * not read": a flag, a URL, a path, a variable, a shell operator, or a bare
+ * symbol the way SQL and expressions carry them (`= ? AND`).
+ */
+const OPERATIONAL_TOKEN = /^--?[A-Za-z]|:\/\/|^[.~]?\/[\w.-]|^\$|^[&|;]{1,2}$|^[=?*+<>{}()[\]]+$/;
+/** A plain word, with the punctuation a sentence hangs on it. */
+const WORD_TOKEN = /^[A-Za-z][A-Za-z'\u2019-]*[,.;:!?)]*$/;
+
+/**
+ * Does this literal body read as a sentence rather than a value?
+ *
+ * Deliberately conservative in the direction of reporting: the body must be
+ * long enough and word-dense enough to be prose, and a single token that looks
+ * like a flag, path, URL, variable or shell operator vetoes the verdict, because
+ * a string that can be executed is a value however chatty it is.
+ */
+export function looksLikeProse(body: string): boolean {
+  const trimmed = body.trim();
+  if (trimmed.length < PROSE_MIN_CHARS) return false;
+  const tokens = trimmed.split(/\s+/);
+  if (tokens.length < PROSE_MIN_TOKENS) return false;
+  if (tokens.some((t) => OPERATIONAL_TOKEN.test(t))) return false;
+  const words = tokens.filter((t) => WORD_TOKEN.test(t)).length;
+  return words / tokens.length >= 0.6;
 }
 
 function findInterpolationEnd(src: string, from: number): number {

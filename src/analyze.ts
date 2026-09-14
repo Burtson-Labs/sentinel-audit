@@ -846,7 +846,7 @@ function candidatesFromDocker(ctx: ScanContext): CandidateFinding[] {
   return out;
 }
 
-function candidatesFromLicenses(ctx: ScanContext): CandidateFinding[] {
+export function candidatesFromLicenses(ctx: ScanContext): CandidateFinding[] {
   const copyleft = copyleftDependencies(ctx.deps.dependencies);
   if (copyleft.length === 0) return [];
   return [
@@ -857,7 +857,14 @@ function candidatesFromLicenses(ctx: ScanContext): CandidateFinding[] {
       severity: 'Low',
       area: 'Dependencies',
       labels: ['dependencies', 'legal'],
-      evidence: copyleft.slice(0, 10).map((d) => `${d.name}@${d.version} — ${d.license}`).join('; ') + (copyleft.length > 10 ? ` (+${copyleft.length - 10} more)` : ''),
+      // Evidence names the artefact the licences were read from. Without the
+      // prefix, a list of package@version pairs failed Sentinel's own schema
+      // check ("must cite a concrete reference") on every repository that had
+      // a copyleft dependency — a validation error in the tool's output.
+      evidence:
+        'package.json (resolved through the lockfile): ' +
+        copyleft.slice(0, 10).map((d) => `${d.name}@${d.version} — ${d.license}`).join('; ') +
+        (copyleft.length > 10 ? ` (+${copyleft.length - 10} more)` : ''),
       why:
         'Strong-copyleft and source-available licences carry distribution obligations. Whether they matter depends on how this code is shipped — a decision that should be made deliberately once rather than discovered during diligence.',
       recommendation: 'Record a licence policy, confirm each of these is compatible with how the product is distributed, and add a licence check to CI so new ones are a conscious choice.',

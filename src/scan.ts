@@ -76,7 +76,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
   const depsOut = collectDependencies(root, { offline: options.offline });
 
   progress('secrets…');
-  const gitignored = gitignoredPredicate(root, reconOut.files.map((f) => f.path).slice(0, 5000));
+  const gitignored = gitignoredPredicate(root, reconOut.files.map((f) => f.path));
   const isTest = testPathPredicate(profile);
   const secretsOut = collectSecrets(root, reconOut.files, { gitignored, isTest });
 
@@ -87,7 +87,19 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
   const dockerOut = collectDocker(root, reconOut.recon.dockerfiles);
 
   progress('rules…');
-  const rulesOut = runRules(root, reconOut.files, { isTest });
+  // Rules audit the repository, not the working directory. A gitignored path —
+  // build output, a service-worker bundle in dev-dist/, an agent's backups, a
+  // local .env — is not committed, not reviewed, and not something the reader
+  // of the report can fix, so a finding that cites it is noise with a real
+  // file:line. Secrets keep the full list on purpose: a live credential in an
+  // untracked file is still worth knowing about, and each candidate records
+  // whether its path is ignored.
+  const repoFiles = reconOut.files.filter((f) => !gitignored(f.path));
+  const rulesOut = runRules(root, repoFiles, { isTest });
+  const ignoredCount = reconOut.files.length - repoFiles.length;
+  if (ignoredCount > 0) {
+    rulesOut.run.notExamined.push(`${ignoredCount} gitignored path(s) skipped — not part of the repository (build output, local state)`);
+  }
 
   const provider = detectProvider({ disabled: options.noLlm, banditCli: options.banditCli });
 

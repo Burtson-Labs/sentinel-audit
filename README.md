@@ -226,8 +226,14 @@ sentinel init-workflow           # write .github/workflows/sentinel.yml
 
 Rules match a **lexically masked** copy of the source — comments and string bodies
 blanked, offsets preserved — so a match is real code rather than a code sample in a
-docblock. Vendored and bundled artefacts are excluded from the code rules and named
-in the coverage report.
+docblock. Rules that look for a *value* (an algorithm name, a storage key, an
+endpoint, an env override) search a view where string literals are kept but any
+literal that reads as a sentence is blanked too, so an error message, a help text
+or a scanner's own rule description cannot become a finding; a shell command in a
+string still can. Vendored and bundled artefacts are excluded from the code rules,
+and so is every gitignored path — build output and local state are not the
+repository — with the count named in the coverage report. Secret scanning still
+reads the whole working tree, and says per file whether the path is tracked.
 
 **Test code is read, but not shouted about.** In a test, a credential-shaped
 construct is usually the thing being exercised: a spec called

@@ -563,7 +563,7 @@ export const ivReuseRule: Rule = {
     }
 
     // ECB named in a WebCrypto algorithm object or a cipher string.
-    for (const m of matchCode(ctx.src, { ...ctx.masked, code: ctx.masked.codeAndStrings }, /\b(?:AES-ECB|aes-\d{3}-ecb)\b/g)) {
+    for (const m of matchCode(ctx.src, { ...ctx.masked, code: ctx.masked.codeAndValues }, /\b(?:AES-ECB|aes-\d{3}-ecb)\b/g)) {
       if (hits.some((h) => h.line === m.line)) continue;
       hits.push(hit(ivReuseRule.id, ctx.file.path, m.line, excerpt(m.lineText), 'ECB mode named in a cipher specification', { kind: 'ecb', inTest: ctx.isTest }));
     }
@@ -646,7 +646,7 @@ export const webCryptoMisuseRule: Rule = {
   scan: (ctx: RuleFileContext) => {
     const hits: RuleHit[] = [];
     // Algorithm names are string literals, so search the comments-blanked view.
-    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndStrings };
+    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndValues };
 
     // 1. Broken digests named as a WebCrypto algorithm.
     //
@@ -805,7 +805,7 @@ export const verifyResultDiscardedRule: Rule = {
     }
 
     // 4. `none` accepted as a signature algorithm.
-    for (const m of matchCode(ctx.src, { ...ctx.masked, code: ctx.masked.codeAndStrings }, /\balgorithms?\s*:\s*(?:\[\s*)?['"`]\s*none\s*['"`]/gi)) {
+    for (const m of matchCode(ctx.src, { ...ctx.masked, code: ctx.masked.codeAndValues }, /\balgorithms?\s*:\s*(?:\[\s*)?['"`]\s*none\s*['"`]/gi)) {
       hits.push(hit(verifyResultDiscardedRule.id, ctx.file.path, m.line, excerpt(m.lineText), "the `none` algorithm is accepted, which makes an unsigned token verify", { kind: 'alg-none', inTest: ctx.isTest }));
     }
 

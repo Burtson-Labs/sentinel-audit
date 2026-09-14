@@ -47,7 +47,7 @@ export const unauthHandlerRule: Rule = {
       .find((m) => AUTH_TOKEN.test(m.match[1] ?? '') || AUTH_TOKEN.test(m.lineText));
 
     // Route paths are string literals, so match the comments-blanked view.
-    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndStrings };
+    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndValues };
     for (const m of matchCode(ctx.src, withStrings, ROUTE_RE)) {
       const method = m.match[1]!;
       const path = m.match[3] ?? '';
@@ -105,7 +105,7 @@ export const swallowedErrorServerRule: Rule = {
   appliesTo: JS_TS,
   scan: (ctx) => {
     if (ctx.isTest) return [];
-    const routes = matchCode(ctx.src, { ...ctx.masked, code: ctx.masked.codeAndStrings }, ROUTE_RE);
+    const routes = matchCode(ctx.src, { ...ctx.masked, code: ctx.masked.codeAndValues }, ROUTE_RE);
     if (routes.length === 0) return [];
     const hasLogging = /\b(requestId|correlationId|traceId|x-request-id|pino|winston|morgan|bunyan|httpLogger|onRequest.*log)\b/i.test(ctx.src);
     if (hasLogging) return [];

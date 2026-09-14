@@ -1133,3 +1133,51 @@ describe('SEC-WEAK-CRYPTO fix plan', () => {
     expect(plan.agentPrompt).toBeTruthy();
   });
 });
+
+describe('a rule does not report its own description', () => {
+  // The self-scan reported four Highs/Mediums against src/rules/*.ts, every one
+  // of them a sentence *about* the construct — a rule's `why`, `acceptance` or
+  // agent instructions — living in a string literal. The same words are a
+  // finding when they are code or a short value, so both directions are pinned.
+  const RULE_PROSE = [
+    'export const rules = {',
+    "  acceptance: ['no rejectUnauthorized:false and no NODE_TLS_REJECT_UNAUTHORIZED=0 in shipped code', 'internal CAs trusted via the certificate store'],",
+    "  detail: 'NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate validation process-wide',",
+    "  fix: 'Replace each flagged weak primitive. createHash(\"md5\"|\"sha1\") becomes createHash(\"sha256\") unless the value is a cache key, in which case add a comment saying the hash is non-cryptographic and leave it.',",
+    "  why: 'A `message` listener that does not check `event.origin` accepts instructions from any frame or window that can reach it, and `postMessage(data, \"*\")` broadcasts the payload to whatever currently occupies the target.',",
+    "  webcrypto: 'WebCrypto takes its parameters as data, so its misuses are invisible to a type checker and silent at runtime: `digest(\"SHA-1\", …)` returns a digest, `importKey(…, true, [\"sign\"])` returns a key.',",
+    '};',
+    '',
+  ].join('\n');
+
+  for (const id of ['SEC-TLS-DISABLED', 'SEC-WEAK-CRYPTO', 'SEC-POSTMESSAGE-ORIGIN', 'SEC-WEBCRYPTO-MISUSE']) {
+    it(`${id} is silent on a file of rule prose`, () => {
+      const rule = ruleById(id)!;
+      expect(rule.scan!(fileCtx('src/rules/security.ts', RULE_PROSE))).toEqual([]);
+    });
+  }
+
+  it('SEC-TLS-DISABLED still reports the option in code and the env override in a shell string', () => {
+    const hits = ruleById('SEC-TLS-DISABLED')!.scan!(
+      fileCtx('src/http.ts', "const agent = new Agent({ rejectUnauthorized: false });\nexecSync('NODE_TLS_REJECT_UNAUTHORIZED=0 node dist/server.js');\n"),
+    );
+    expect(hits.map((h) => h.line)).toEqual([1, 2]);
+  });
+
+  it('SEC-WEAK-CRYPTO still reports a real md5 in a signing path', () => {
+    const hits = ruleById('SEC-WEAK-CRYPTO')!.scan!(
+      fileCtx('src/sign.ts', "import { createHash } from 'node:crypto';\nexport function sign(secret: string): string {\n  return createHash('md5').update(secret).digest('hex');\n}\n"),
+    );
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('SEC-POSTMESSAGE-ORIGIN still reports a wildcard target in code', () => {
+    const hits = ruleById('SEC-POSTMESSAGE-ORIGIN')!.scan!(fileCtx('src/embed.ts', "parent.postMessage({ token }, '*');\n"));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('SEC-WEBCRYPTO-MISUSE still reports a SHA-1 digest passed as a value', () => {
+    const hits = ruleById('SEC-WEBCRYPTO-MISUSE')!.scan!(fileCtx('src/digest.ts', "export const d = (data: Uint8Array) => crypto.subtle.digest('SHA-1', data);\n"));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+});

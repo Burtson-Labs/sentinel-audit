@@ -15,7 +15,9 @@ import type { RuleHit, SecretCandidate, Severity } from '../src/types.js';
  * markdown file. Neither is a credential, and putting them at the top of a secret
  * finding teaches the reader to skip the section.
  *
- * The fixtures below are the real lines from that scan.
+ * The fixtures below keep the shape of the real lines from that scan. The PostHog
+ * key is a synthetic value of the same length and entropy, not the one the audited
+ * repository ships.
  */
 
 const run = (path: string, text: string): SecretCandidate[] => {
@@ -29,7 +31,7 @@ const reasons = (candidates: SecretCandidate[]): string => candidates.map((c) =>
 
 describe('publishable-by-design keys', () => {
   it('does not report a PostHog project key as a credential', () => {
-    // verbatim from backend/core/analytics.py in the audited repository
+    // shape of backend/core/analytics.py in the audited repository, synthetic key
     const hits = run(
       'backend/core/analytics.py',
       '_PUBLIC_PROJECT_TOKEN = "phc_1aVTBknGsk01feeKT0Ooi4Jqf0K8rZqgLVuvmFzD3Gcp"\n',

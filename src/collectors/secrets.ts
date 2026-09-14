@@ -86,6 +86,22 @@ const IDENTIFIER_SHAPED = /^[A-Za-z][A-Za-z0-9]*(?:[._:/-][A-Za-z0-9]+)*$/;
 const NAME_HOLDER = /(?:_KEY|_NAME|_ID|_FIELD|_HEADER|_PARAM|_PREFIX|_LABEL|Key|Name|Id|Field|Header|Param|Prefix|Label)$/;
 const PLACEHOLDER_WORDS = /(example|sample|placeholder|dummy|changeme|change_me|your[_-]?|my[_-]?secret|redacted|xxxx|todo|fixme|notasecret|test[_-]?(key|token|secret)|fake|mock|lorem|password123|s3cret|secret123|abc123|\bnull\b|\bundefined\b|\bnone\b)/i;
 const TYPE_LIKE = /^(?:string|number|boolean|any|unknown|null|undefined|Record<|Array<|Promise<)/;
+/**
+ * The password component of a connection string when it is one of the words
+ * documentation uses *for* a password. `postgres://user:password@host` is the
+ * shape every driver README ships; nothing is leaked by it, on any host.
+ */
+const PLACEHOLDER_PASSWORD = /^(?:secret|password|passw0rd|passwd|pass|pwd|pw|token|changeme|change[_-]?me|example|test|user|username|your[_-]?password|my[_-]?password|mypass)$/i;
+/** A credential written with an ellipsis is a truncated illustration, never the value. */
+const TRUNCATED = /\.{3}|\u2026/;
+/**
+ * A PEM header that is a bare string *token* — closed by its quote and followed
+ * by a delimiter — rather than the first line of a key block:
+ * `.Replace("-----BEGIN PRIVATE KEY-----", "")`, `startsWith('-----BEGIN RSA PRIVATE KEY-----')`.
+ * A real block continues with base64 on the next line, or an escaped newline
+ * inside the same literal, and neither is followed by a closing quote here.
+ */
+const PEM_HEADER_TOKEN = /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----\s*["'`]\s*[,)\];+]/;
 const SAFE_PATH = /(^|\/)(\.env\.example|\.env\.sample|\.env\.template|example\.env|README|CHANGELOG|LICENSE|SECURITY|CONTRIBUTING)/i;
 /**
  * Documentation and example directories. Test/fixture/mock paths come from the
@@ -364,9 +380,21 @@ interface TriageInput {
  * check fire on the word "example" and a genuine connection-string leak gets
  * suppressed. Triage has to look at the secret, not at its neighbours.
  */
+/** Four or more whitespace-separated tokens, most of them plain words. */
+export function looksLikeSentence(value: string): boolean {
+  const tokens = value.trim().split(/\s+/);
+  if (tokens.length < 4) return false;
+  const words = tokens.filter((t) => /^[A-Za-z][A-Za-z'\u2019-]*[,.;:!?)]*$/.test(t)).length;
+  return words / tokens.length >= 0.6;
+}
+
+/** The password component of a `scheme://user:password@host` value, if that is what this is. */
+export function urlPassword(value: string): string | undefined {
+  return /^[a-z+]+:\/\/(?:[^:/@\s]+):([^@\s]+)@/i.exec(value)?.[1];
+}
+
 export function credentialPart(value: string): string {
-  const url = /^[a-z+]+:\/\/(?:[^:/@\s]+):([^@\s]+)@/i.exec(value);
-  return url?.[1] ?? value;
+  return urlPassword(value) ?? value;
 }
 
 /**
@@ -428,6 +456,15 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
       reason: `the line carries an explicit scanner allow annotation (${ALLOW_ANNOTATION.exec(lineText)![0]}). Honoured because it is committed and reviewable — published here rather than applied silently, so you can disagree with the author`,
     };
   }
+  // A PEM header handled as a token is delimiter code, not a key. An OAuth
+  // service that strips the armour before base64-decoding a key it was *given*
+  // was the lead item in a High "33 credential-shaped values" finding.
+  if (rule.id === 'private-key-block' && PEM_HEADER_TOKEN.test(lineText)) {
+    return {
+      suppress: true,
+      reason: 'the PEM header is a bare string token closed by its quote and followed by a delimiter (Replace/split/startsWith-style handling); no key material follows it. A header that opens a key block is still reported',
+    };
+  }
   // A connection string aimed at a loopback host, in a document, is an
   // instruction: "export DATABASE_URL=postgres://readonly_user:secret@localhost
   // :5432/appdb" is how a README tells a reader to point the tool at their own
@@ -447,6 +484,17 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
       reason: `documentation example pointing at a loopback host (${docHost}) — ${path} is prose/example text, and a credential for ${docHost} is not reachable from anywhere else, so there is nothing to rotate. The same connection string with a routable host is still reported`,
     };
   }
+  // The password of a documented connection string is often the word
+  // "password". That is a shape, not a credential, whatever the host and
+  // whatever the path — there is nothing to rotate. After the loopback check,
+  // whose reason is the more specific one when both apply.
+  const password = urlPassword(value);
+  if (password && PLACEHOLDER_PASSWORD.test(password)) {
+    return {
+      suppress: true,
+      reason: `the password component is the placeholder word "${password}", so the URL documents a shape rather than embedding a credential. The same URL with a real password is still reported`,
+    };
+  }
   if (PROSE_FILE.test(path) && !rule.precise && DOC_PLACEHOLDER.test(value)) {
     return {
       suppress: true,
@@ -455,6 +503,9 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
   }
   if (PLACEHOLDER.test(credential.trim())) {
     return { suppress: true, reason: `value is a placeholder token ("${credential.slice(0, 24)}"), not a credential` };
+  }
+  if (TRUNCATED.test(credential)) {
+    return { suppress: true, reason: `value is written with an ellipsis ("${credential.slice(0, 24)}"), so it is a truncated illustration of a credential, not one` };
   }
   // Never for a precise provider pattern. `sk_live_…` is identifier-shaped and
   // `stripeApiKey` ends in `Key`, so this branch was silently dismissing real
@@ -482,6 +533,15 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
   if (!rule.precise) {
     if (rule.minEntropy !== undefined && entropy < rule.minEntropy) {
       return { suppress: true, reason: `entropy ${entropy.toFixed(2)} below the ${rule.minEntropy} threshold for generic matches` };
+    }
+    // Random material does not contain spaced words. A generic match whose
+    // value is a sentence — a gate description, an error message, a help text
+    // assigned to a name that happens to end in "secret" — is prose.
+    if (looksLikeSentence(value)) {
+      return {
+        suppress: true,
+        reason: `value is a sentence ("${value.trim().slice(0, 40)}…"), not random material — prose assigned to a secret-shaped name`,
+      };
     }
     if (IDENTIFIER_SHAPED.test(value.trim()) && !/\d{4,}/.test(value) && value.trim().length < 48) {
       return {
@@ -731,8 +791,16 @@ function countJsonArray(text: string): number {
 /** Build a predicate for "is this path gitignored" using one git call. */
 export function gitignoredPredicate(root: string, paths: string[]): (p: string) => boolean {
   if (paths.length === 0) return () => false;
-  const res = run('git', ['-C', root, 'check-ignore', '--stdin'], { input: `${paths.join('\n')}\n`, timeoutMs: 20_000 });
-  const ignored = new Set(res.stdout.split('\n').map((l) => l.trim()).filter(Boolean));
+  const ignored = new Set<string>();
+  // One git call per 5,000 paths keeps each process's stdin and runtime bounded
+  // without capping how much of the tree is classified.
+  for (let i = 0; i < paths.length; i += 5000) {
+    const res = run('git', ['-C', root, 'check-ignore', '--stdin'], { input: `${paths.slice(i, i + 5000).join('\n')}\n`, timeoutMs: 20_000 });
+    for (const l of res.stdout.split('\n')) {
+      const t = l.trim();
+      if (t) ignored.add(t);
+    }
+  }
   return (p: string) => ignored.has(p);
 }
 

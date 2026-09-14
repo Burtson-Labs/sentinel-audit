@@ -899,12 +899,35 @@ function verifyAdvisory(input: VerifyInput): VerifyResult {
 // proof execution
 // ---------------------------------------------------------------------------
 
+/**
+ * Proof scripts import the audited repository's TypeScript directly, which
+ * relies on Node's native type stripping. That is on by default from 22.18 and
+ * 23.6; on 22.6–22.17 — inside the engines range this package declares — it
+ * exists only behind a flag, and without it every proof against a `.ts` module
+ * came back "could not load outside its bundler": the headline feature silently
+ * degraded to pattern matching on a supported Node.
+ *
+ * `process.features.typescript` reports the current mode where it exists
+ * (22.10+); where it does not, the version alone decides.
+ */
+export function proofNodeArgs(
+  runtime: { node: string; typescript?: unknown } = {
+    node: process.versions.node,
+    typescript: (process as { features?: { typescript?: unknown } }).features?.typescript,
+  },
+): string[] {
+  if (runtime.typescript) return [];
+  const [major = 0, minor = 0] = runtime.node.split('.').map((x) => Number.parseInt(x, 10));
+  return major > 22 || (major === 22 && minor >= 6) ? ['--experimental-strip-types'] : [];
+}
+
 function executeProof(spec: ProofSpec, input: VerifyInput): ProofRun | null {
   ensureDir(input.proofDir);
   const scriptPath = join(input.proofDir, spec.filename);
   writeFileEnsured(scriptPath, spec.source);
   const started = Date.now();
-  const res = run(process.execPath, [scriptPath], {
+  const nodeArgs = proofNodeArgs();
+  const res = run(process.execPath, [...nodeArgs, scriptPath], {
     cwd: input.ctx.root,
     timeoutMs: 60_000,
     env: { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1' },
@@ -912,10 +935,12 @@ function executeProof(spec: ProofSpec, input: VerifyInput): ProofRun | null {
   const parsed = parseProofOutput(res.stdout);
   const durationMs = Date.now() - started;
   const relPath = `proofs/${spec.filename}`;
+  // The command is what a reader re-runs by hand, so it carries the flag too.
+  const command = ['node', ...nodeArgs, relPath].join(' ');
   if (!parsed) {
     return {
       path: relPath,
-      command: `node ${relPath}`,
+      command,
       exitCode: res.code,
       durationMs,
       predicted: spec.predicted,
@@ -927,7 +952,7 @@ function executeProof(spec: ProofSpec, input: VerifyInput): ProofRun | null {
   }
   return {
     path: relPath,
-    command: `node ${relPath}`,
+    command,
     exitCode: res.code,
     durationMs,
     predicted: spec.predicted,

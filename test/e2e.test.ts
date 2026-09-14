@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { proofNodeArgs } from '../src/verify/index.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scan } from '../src/scan.js';
@@ -337,5 +339,72 @@ describe('artefacts do not republish the audited repository', () => {
     const longest = md.split('\n').reduce((n, l) => Math.max(n, l.length), 0);
     expect(longest).toBeLessThan(4000);
     expect(md).not.toContain('ESCAPES: Record<string, string>');
+  });
+});
+
+describe('gitignored paths are not part of the repository the rules audit', () => {
+  // Two real scans cited `dev-dist/workbox-*.js` (a generated service worker,
+  // gitignored) and `.bandit/backups/…` (an agent's own copies, gitignored) for
+  // empty catches, missing origin checks and oversized modules. Every one was a
+  // true match against a file nobody committed, reviews, or can fix.
+  let repo2: string;
+  let out2: string;
+  let findings2: Finding[];
+
+  beforeAll(async () => {
+    repo2 = mkdtempSync(join(tmpdir(), 'sentinel-e2e-ignored-'));
+    out2 = mkdtempSync(join(tmpdir(), 'sentinel-e2e-ignored-out-'));
+    const w = (rel: string, content: string): void => {
+      mkdirSync(join(repo2, rel, '..'), { recursive: true });
+      writeFileSync(join(repo2, rel), content, 'utf8');
+    };
+    w('package.json', JSON.stringify({ name: 'ignored-fixture', version: '1.0.0', private: true, type: 'module', scripts: { test: 'node --test' } }, null, 2));
+    w('.gitignore', 'dev-dist/\n.env\n');
+    w('src/ok.ts', 'export const ok = 1;\n');
+    w('src/swallow.ts', ['export function attempt(fn: () => void): void {', '  try {', '    fn();', '  } catch {}', '}', ''].join('\n'));
+    w('dev-dist/sw.js', ['self.addEventListener("message", (event) => {', '  try {', '    handle(event.data);', '  } catch (e) {}', '});', ''].join('\n'));
+    execFileSync('git', ['-C', repo2, 'init', '-q']);
+    const result = await scan({ repo: repo2, outDir: out2, profile: 'owasp-asvs', formats: ['md', 'json'], noLlm: true, offline: true, noProofs: true });
+    findings2 = result.findings;
+  }, 120_000);
+
+  afterAll(() => {
+    for (const dir of [repo2, out2]) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // a leftover temp directory is not worth failing the suite over
+      }
+    }
+  });
+
+  it('never cites a gitignored file', () => {
+    expect(JSON.stringify(findings2)).not.toContain('dev-dist/');
+  });
+
+  it('still reports the same defect in a tracked file', () => {
+    expect(findings2.some((f) => f.evidence.includes('src/swallow.ts'))).toBe(true);
+  });
+
+  it('says how many paths it skipped, so the coverage statement stays honest', () => {
+    const coverage = readFileSync(join(out2, 'COVERAGE.md'), 'utf8');
+    expect(coverage).toMatch(/1 gitignored path\(s\) skipped/);
+  });
+});
+
+describe('proofNodeArgs: proofs import TypeScript on every supported Node', () => {
+  it('adds the flag on Node 22.6–22.17, where type stripping is opt-in', () => {
+    expect(proofNodeArgs({ node: '22.15.1', typescript: undefined })).toEqual(['--experimental-strip-types']);
+    expect(proofNodeArgs({ node: '22.6.0' })).toEqual(['--experimental-strip-types']);
+    expect(proofNodeArgs({ node: '23.2.0', typescript: false })).toEqual(['--experimental-strip-types']);
+  });
+
+  it('adds nothing where the runtime already strips types', () => {
+    expect(proofNodeArgs({ node: '22.18.0', typescript: 'strip' })).toEqual([]);
+    expect(proofNodeArgs({ node: '24.1.0', typescript: 'strip' })).toEqual([]);
+  });
+
+  it('adds nothing below 22.6, where the flag does not exist', () => {
+    expect(proofNodeArgs({ node: '20.19.0' })).toEqual([]);
   });
 });

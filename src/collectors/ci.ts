@@ -111,6 +111,14 @@ export function summariseWorkflow(file: string, text: string): WorkflowSummary {
         if (jobVal && typeof jobVal === 'object' && !Array.isArray(jobVal)) {
           const job = jobVal as Record<string, YamlValue>;
           const stepList = Array.isArray(job.steps) ? job.steps : [];
+          // A `continue-on-error: true` step is not a gate on its own, but the
+          // idiom "let the scan finish so its report uploads, then fail on its
+          // recorded outcome" is: a later step tests `steps.<id>.outcome`
+          // against `success`. The shipped workflow template is written that
+          // way, and without this the tool told every repository using it that
+          // its PR gate does not audit.
+          const deferred = new Map<string, string>(); // step id -> haystack
+          const reasserted = new Set<string>();
           for (const s of stepList) {
             if (!s || typeof s !== 'object' || Array.isArray(s)) continue;
             const step = s as Record<string, YamlValue>;
@@ -125,6 +133,14 @@ export function summariseWorkflow(file: string, text: string): WorkflowSummary {
             });
             const haystack = `${runCmd ?? ''}\n${uses ?? ''}`;
             if (!softFail && !isSoftFailed(runCmd)) markGates(haystack, gates);
+            else if (softFail && typeof step.id === 'string') deferred.set(step.id, haystack);
+            if (runCmd) {
+              for (const m of runCmd.matchAll(OUTCOME_REASSERT)) reasserted.add((m[1] ?? m[2])!);
+            }
+          }
+          for (const id of reasserted) {
+            const haystack = deferred.get(id);
+            if (haystack !== undefined) markGates(haystack, gates);
           }
         }
         jobs.push({ name: jobName, steps });
@@ -153,15 +169,34 @@ export function summariseWorkflow(file: string, text: string): WorkflowSummary {
   };
 }
 
+/** `test "${{ steps.<id>.outcome }}" = "success"`, or the same in an expression. */
+const OUTCOME_REASSERT = /steps\.([\w-]+)\.outcome\s*\}\}["']?\s*={1,3}\s*["']?success|steps\.([\w-]+)\.outcome\s*={2,3}\s*["']success/g;
+
 /** `cmd || true`, `cmd || exit 0`, `set +e` defeat the gate. */
 function isSoftFailed(cmd: string | undefined): boolean {
   if (!cmd) return false;
   return /\|\|\s*(true|exit\s+0|:)\b/.test(cmd) || /\bset\s+\+e\b/.test(cmd) || /--?no-fail|--exit-code[= ]0/.test(cmd);
 }
 
+/**
+ * Sentinel's own scan, as the shipped workflow template invokes it (`npx
+ * sentinel-audit scan`), as a global install does (`sentinel scan`), and as this
+ * repository runs it from its build output (`node dist/cli.js scan`).
+ */
+const SENTINEL_SCAN = /(?:\bsentinel(?:-audit)?|(?:^|[\s/])dist\/cli\.js)\s+scan\b/m;
+
 function markGates(haystack: string, gates: WorkflowSummary['gates']): void {
   for (const key of Object.keys(GATE_PATTERNS) as Array<keyof WorkflowSummary['gates']>) {
     if (GATE_PATTERNS[key].test(haystack)) gates[key] = true;
+  }
+  // A Sentinel scan is static analysis *and* a dependency audit — advisories are
+  // fetched unless `--offline` — so a repository that runs it on pull requests
+  // was being told, by the tool doing the auditing, that its PR gate does not
+  // audit. It is not a history-aware secret scan unless gitleaks or trufflehog
+  // is on the runner, so `secrets` is left to those patterns.
+  if (SENTINEL_SCAN.test(haystack)) {
+    gates.sast = true;
+    if (!/--offline\b/.test(haystack)) gates.audit = true;
   }
 }
 

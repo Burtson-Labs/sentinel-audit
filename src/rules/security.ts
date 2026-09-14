@@ -200,7 +200,7 @@ export const tokenWebStorageRule: Rule = {
   scan: (ctx) => {
     const hits: RuleHit[] = [];
     const re = /\b(localStorage|sessionStorage)\s*\.\s*(setItem|getItem)\s*\(\s*([^,)]*)/g;
-    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndStrings };
+    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndValues };
     for (const m of matchCode(ctx.src, withStrings, re)) {
       const store = m.match[1]!;
       const op = m.match[2]!;
@@ -419,9 +419,9 @@ export const childProcessShellRule: Rule = {
     // `/^\$[A-Za-z_]*\$/.exec(s)` — is RegExp.prototype.exec, and reporting it
     // turns every SQL parser into a shell-injection finding.
     const spawnNamespaces = new Set(
-      [...ctx.masked.codeAndStrings.matchAll(/import\s+(?:\*\s+as\s+)?([\w$]+)\s+from\s+['"`](?:node:)?(child_process|execa|cross-spawn|shelljs|zx)['"`]/g)].map((m) => m[1]!),
+      [...ctx.masked.codeAndValues.matchAll(/import\s+(?:\*\s+as\s+)?([\w$]+)\s+from\s+['"`](?:node:)?(child_process|execa|cross-spawn|shelljs|zx)['"`]/g)].map((m) => m[1]!),
     );
-    for (const m of ctx.masked.codeAndStrings.matchAll(/(?:const|let|var)\s+([\w$]+)\s*=\s*require\s*\(\s*['"`](?:node:)?(?:child_process|execa|cross-spawn|shelljs|zx)/g)) {
+    for (const m of ctx.masked.codeAndValues.matchAll(/(?:const|let|var)\s+([\w$]+)\s*=\s*require\s*\(\s*['"`](?:node:)?(?:child_process|execa|cross-spawn|shelljs|zx)/g)) {
       spawnNamespaces.add(m[1]!);
     }
     for (const n of ['cp', 'childProcess', 'child_process', 'proc', 'nodeChildProcess']) spawnNamespaces.add(n);
@@ -610,7 +610,7 @@ export const weakCryptoRule: Rule = {
     const hits: RuleHit[] = [];
     // The algorithm name is a string literal, so match the comments-blanked
     // view: the code-only view has already blanked it to spaces.
-    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndStrings };
+    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndValues };
     for (const m of matchCode(ctx.src, withStrings, /createHash\s*\(\s*['"`]?\s*(md5|sha1)/gi)) {
       hits.push(hit(weakCryptoRule.id, ctx.file.path, m.line, excerpt(m.lineText), 'broken hash algorithm (MD5/SHA-1)', { kind: 'hash', inTest: ctx.isTest }));
     }
@@ -752,7 +752,7 @@ export const tlsDisabledRule: Rule = {
       hits.push(hit(tlsDisabledRule.id, ctx.file.path, m.line, excerpt(m.lineText), `certificate validation disabled: ${m.match[0].trim()}`, { inTest: ctx.isTest }));
     }
     // also check raw text for env-file style settings the masker would blank
-    for (const m of matchCode(ctx.src, { ...ctx.masked, code: ctx.masked.codeAndStrings }, /NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0/g)) {
+    for (const m of matchCode(ctx.src, { ...ctx.masked, code: ctx.masked.codeAndValues }, /NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0/g)) {
       if (hits.some((h) => h.line === m.line)) continue;
       hits.push(hit(tlsDisabledRule.id, ctx.file.path, m.line, excerpt(m.lineText), 'NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate validation process-wide', { inTest: ctx.isTest }));
     }
@@ -820,7 +820,7 @@ export const postMessageOriginRule: Rule = {
   appliesTo: JS_TS,
   scan: (ctx) => {
     const hits: RuleHit[] = [];
-    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndStrings };
+    const withStrings = { ...ctx.masked, code: ctx.masked.codeAndValues };
     for (const m of matchCode(ctx.src, withStrings, /addEventListener\s*\(\s*['"`]?message['"`]?\s*,/g)) {
       const window400 = ctx.src.slice(m.index, m.index + 600);
       if (/\.origin\b/.test(window400)) continue;
@@ -871,7 +871,7 @@ export const secretInClientBundleRule: Rule = {
     // Values live in string literals, so search the comments-blanked view
     // rather than raw source: a URL quoted inside an explanatory comment is
     // documentation, not an endpoint this code calls.
-    const searchSpace = { ...ctx.masked, code: ctx.masked.codeAndStrings };
+    const searchSpace = { ...ctx.masked, code: ctx.masked.codeAndValues };
     for (const m of matchCode(ctx.src, searchSpace, re)) {
       const name = m.match[1]!;
       // The whole premise is that a *build variable* gets string-substituted
@@ -977,7 +977,7 @@ export const httpEndpointRule: Rule = {
     // Values live in string literals, so search the comments-blanked view
     // rather than raw source: a URL quoted inside an explanatory comment is
     // documentation, not an endpoint this code calls.
-    const searchSpace = { ...ctx.masked, code: ctx.masked.codeAndStrings };
+    const searchSpace = { ...ctx.masked, code: ctx.masked.codeAndValues };
     for (const m of matchCode(ctx.src, searchSpace, re)) {
       const host = m.match[1] ?? '';
       if (LOOPBACK_OR_RESERVED.test(host)) continue;
@@ -1026,7 +1026,7 @@ export const targetBlankRule: Rule = {
     // Values live in string literals, so search the comments-blanked view
     // rather than raw source: a URL quoted inside an explanatory comment is
     // documentation, not an endpoint this code calls.
-    const searchSpace = { ...ctx.masked, code: ctx.masked.codeAndStrings };
+    const searchSpace = { ...ctx.masked, code: ctx.masked.codeAndValues };
     for (const m of matchCode(ctx.src, searchSpace, /target\s*=\s*["'{]?\s*_blank/g)) {
       const region = ctx.src.slice(Math.max(0, m.index - 300), m.index + 300);
       // `noreferrer` implies `noopener` — the HTML spec says so, and every

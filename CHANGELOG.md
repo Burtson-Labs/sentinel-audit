@@ -5,6 +5,90 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Sentinel scanned itself and three real repositories; eight defects in its own output
+
+Each of these is a case where the tool was right about the text and wrong about
+the finding, or where its own artefacts were the problem.
+
+- **The remote URL was written into every artefact with its userinfo intact.**
+  `git remote get-url origin` returned `https://user@github.com/…` and the string
+  went verbatim into `REPORT.md`, `CONFIDENCE.md`, `scan-context.json` and the
+  SARIF `repositoryUri` — the files the shipped workflow uploads as build
+  artefacts. A remote configured as `https://x-access-token:ghp_…@github.com/…`,
+  which is how many CI systems and credential helpers write it, would have had
+  the scanner publish the token. `redactRepoUrl` strips the userinfo before the
+  URL is recorded; the host and path identify the repository. ssh forms keep
+  their bare `git@`.
+- **Proofs never ran on Node 22.6–22.17.** Proof scripts import the audited
+  repository's TypeScript through Node's native type stripping, which is on by
+  default only from 22.18 / 23.6. On the rest of the engines range this package
+  declares, every proof against a `.ts` module returned "could not load outside
+  its bundler" and the headline feature silently degraded to pattern matching.
+  The runner now passes `--experimental-strip-types` where
+  `process.features.typescript` says stripping is off and the version says the
+  flag exists, and the recorded `command` carries the flag so a reader re-runs
+  the same thing.
+- **Four rules reported their own descriptions.** The self-scan carried a High
+  "TLS certificate validation disabled", a High "SubtleCrypto called with a
+  broken digest", a Medium "message handling without origin validation" and a
+  Medium "weak hash" — each pointing at a sentence *about* the construct, in a
+  rule's `why`, `acceptance` or agent instructions, living in a string literal.
+  The lexer gains a fourth view, `codeAndValues`: comments blanked, and any
+  string literal whose body reads as a sentence (40+ characters, 5+ tokens, 60%
+  plain words, and no token that looks like a flag, path, URL, variable or shell
+  operator) blanked with them. Every rule that hunts for a *value* — an
+  algorithm name, a storage key, a route path, an env override, an endpoint —
+  now searches that view. `codeAndStrings` is unchanged, so the secret scanner
+  still sees every literal. A shell command in a string is still a value: the
+  operational-token veto keeps `NODE_TLS_REJECT_UNAUTHORIZED=0 node server.js`
+  reportable.
+- **Three "credentials" in Sentinel's own source were a comment, a docblock and
+  a gate description.** A connection string whose password component is one of
+  the words documentation uses *for* a password (`secret`, `password`, `pass`,
+  `changeme`, …) documents a shape, on any host and any path, and is now
+  dismissed with that reason; the same URL with a real password on localhost in
+  `src/` is still High. A generic match whose value is a sentence — four or more
+  spaced tokens, mostly words — is prose assigned to a secret-shaped name, not
+  random material. And a PEM header that is a bare string *token*, closed by its
+  quote and followed by a delimiter (`.Replace("-----BEGIN PRIVATE KEY-----",
+  "")`, `startsWith('-----BEGIN …')`), is delimiter handling: it led a real
+  .NET scan's High "33 credential-shaped values" finding, and no key material
+  followed it. A header that opens a key block is still reported. Two smaller
+  shapes from the same pass: a credential written with an ellipsis
+  (`ghp_…`, `wJalrXUtnFEMI...`) is a truncated illustration, and `token` joins
+  the placeholder-password words.
+- **Gitignored paths were audited as if they were the repository.** Two scans
+  cited `dev-dist/workbox-*.js` (a generated service worker) and
+  `.bandit/backups/…` (an agent's own copies) for empty catches, missing origin
+  checks and oversized modules. Every one was a true match against a file nobody
+  committed, reviews or can fix. The rules now run over the non-ignored tree
+  only; the coverage report says how many paths were skipped and why. Secret
+  scanning keeps the full working tree on purpose — a live credential in an
+  untracked file is still worth knowing about — and the gitignore classification
+  now covers every walked path rather than the first 5,000.
+- **"PR gate does not enforce: audit" on a repository that runs Sentinel on pull
+  requests.** The CI collector recognised `sentinel scan` as SAST but not as the
+  dependency audit it also is. A `sentinel scan` / `sentinel-audit scan` /
+  `dist/cli.js scan` step now satisfies `audit` unless it passes `--offline`,
+  which skips advisory lookup. It still does not satisfy `secrets`: without
+  gitleaks or trufflehog on the runner the scan does not cover history, and the
+  gate's definition says history.
+- **A licence finding failed Sentinel's own schema check on every repository
+  that had a copyleft dependency.** `DEP-LICENSE` evidence was a list of
+  `name@version — licence` pairs with no artefact named, so the semantic
+  validator reported "must cite a concrete reference" as a defect in Sentinel's
+  output. The evidence now leads with the manifest it was read from.
+- **The shipped workflow and the repository's own CI used mutable action tags**,
+  which Sentinel's `CICD` rule reports at Medium. Both now pin every action to a
+  commit SHA with the release tag alongside.
+- **The self-scan's three dependency advisories were real.** `vitest` moves from
+  2.x to 4.1 (and its `vite` to 7.x), which clears the critical vitest advisory,
+  the high vite advisory and the lower-severity aggregate the scan reported.
+
+Test fixtures no longer carry a live PostHog project key copied from a scanned
+public repository, or the name of a private one; the synthetic replacements keep
+the same shape and entropy.
+
 ### Honest verification vocabulary (breaking change to `status` values)
 
 A finding whose only verification was re-running a static assertion used to carry
