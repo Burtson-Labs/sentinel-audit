@@ -95,12 +95,14 @@ function parseArgs(argv: string[]): Args {
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
-  if (args.flags.has('help') || args.flags.has('h') || !args.command || args.command === 'help') {
-    process.stdout.write(`${USAGE}\n`);
-    return 0;
-  }
+  // `--version` has no command, so it must be answered before the no-command
+  // fallback prints the whole usage banner.
   if (args.flags.has('version') || args.command === 'version') {
     process.stdout.write(`${TOOL_VERSION}\n`);
+    return 0;
+  }
+  if (args.flags.has('help') || args.flags.has('h') || !args.command || args.command === 'help') {
+    process.stdout.write(`${USAGE}\n`);
     return 0;
   }
 
