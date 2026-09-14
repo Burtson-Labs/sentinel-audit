@@ -1,26 +1,35 @@
 name: publish
 
-# Publishes @burtson-labs/sentinel-audit to npm from CI, so the token never
-# lives on a laptop. Runs when a GitHub release is published, or by hand from
-# the Actions tab.
+# Publishes @burtson-labs/sentinel-audit to npmjs the way the other Burtson Labs
+# packages are published: on every push to main, on the burtson-labs-runners
+# pool, with the organisation's NPM_TOKEN. A version already on the registry is
+# skipped, so only a version bump in package.json publishes, and re-running is
+# safe.
 #
-# The token is the organisation secret NPM_TOKEN. If this repository cannot
-# see it (organisation secrets are scoped to selected repositories), the
-# publish step fails with ENEEDAUTH and nothing is uploaded. A version that is
-# already on the registry is skipped, so re-running is safe.
+# The shared reusable workflow (Burtson-Labs/actions build-push-pnpmjs-package)
+# pins Node 18. This package needs Node 22.6 or newer for its tests and its
+# proof runner, and `pnpm publish` runs them through prepublishOnly, so the same
+# steps are inlined here on Node 22 rather than called through.
+#
+# The token is injected by setup-node into a temporary npmrc under RUNNER_TEMP
+# and read only by the publish step; it is never written into the checkout.
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: burtson-labs-runners
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -48,10 +57,11 @@ jobs:
             echo "$NAME@$VERSION is already on the registry; nothing to do"
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "$NAME@$VERSION is not on the registry; publishing"
           fi
 
       - name: Publish
         if: steps.check.outputs.published == 'false'
-        run: npm publish
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
