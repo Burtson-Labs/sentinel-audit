@@ -436,6 +436,8 @@ describe('renderers', () => {
     expect(html).not.toMatch(/@import\s+url\(/i);
     expect(html).not.toMatch(/\bfetch\s*\(/);
     expect(html).not.toMatch(/XMLHttpRequest|WebSocket|EventSource/);
+    expect(html).toContain('<svg class="icon"');
+    expect(html).toContain('aria-hidden="true"');
   });
 
   it('html report styles both colour schemes', () => {

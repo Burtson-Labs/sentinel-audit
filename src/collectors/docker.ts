@@ -83,7 +83,11 @@ export function analyseDockerfile(file: string, text: string): DockerResult['fil
     }
 
     const arg = /^(?:ARG|ENV)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=?/i.exec(line);
-    if (arg?.[1] && SECRET_ARG.test(arg[1])) {
+    // OAuth TOKEN_URL / AUTH_URL values are public endpoint locations, not
+    // authenticators. Treating the noun without its qualifier made ordinary
+    // OIDC configuration a High-severity secret finding.
+    const publicEndpoint = arg?.[1] ? /(?:^|_)(?:URL|URI|ENDPOINT|HOST)$/i.test(arg[1]) : false;
+    if (arg?.[1] && SECRET_ARG.test(arg[1]) && !publicEndpoint) {
       secretsInArgs.push({ line: lineNo, name: arg[1] });
     }
 

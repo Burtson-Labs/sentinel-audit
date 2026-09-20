@@ -280,6 +280,16 @@ describe('SEC-TIMING-UNSAFE-COMPARE', () => {
     expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/a.ts', 'if (storedSecret.equals(given)) ok();\n')).toHaveLength(1);
   });
 
+  it('does not flag copied-token UI state', () => {
+    const src = [
+      'const [copiedToken, setCopiedToken] = useState<string | null>(null);',
+      'const label = copiedToken === link.token ? "copied" : "copy";',
+      'setTimeout(() => setCopiedToken((t) => (t === link.token ? null : t)), 1500);',
+      '',
+    ].join('\n');
+    expect(scan('SEC-TIMING-UNSAFE-COMPARE', 'src/Artifacts.tsx', src)).toHaveLength(0);
+  });
+
   it('exempts the length guard that precedes timingSafeEqual', () => {
     const src = [
       "import { timingSafeEqual } from 'node:crypto';",

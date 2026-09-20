@@ -353,6 +353,11 @@ describe('Dockerfile analysis', () => {
     const d = analyseDockerfile('Dockerfile', 'FROM node:22\nARG NPM_TOKEN\nENV API_SECRET=x\nUSER node\n');
     expect(d.secretsInArgs.map((s) => s.name)).toEqual(['NPM_TOKEN', 'API_SECRET']);
   });
+
+  it('does not call public authentication endpoint variables secrets', () => {
+    const d = analyseDockerfile('Dockerfile', 'FROM node:22\nARG VITE_OIDC_TOKEN_URL\nENV AUTH_ENDPOINT=https://auth.example.test\n');
+    expect(d.secretsInArgs).toEqual([]);
+  });
 });
 
 describe('yaml subset parser', () => {

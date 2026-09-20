@@ -31,7 +31,7 @@ export function renderHtml(ctx: ScanContext, findings: Finding[], profile: Profi
 <body>
 <header class="top">
   <div class="wrap">
-    <p class="eyebrow">sentinel-audit · ${esc(profile.title)}</p>
+    <p class="eyebrow">${lucideIcon('shield-check')} sentinel-audit · ${esc(profile.title)}</p>
     <h1>${esc(name)}</h1>
     <p class="meta"><code>${esc(ctx.recon.commitSha.slice(0, 12))}</code> on <code>${esc(ctx.recon.branch)}</code> · ${new Date().toISOString().slice(0, 10)} · ${esc(ctx.recon.repoUrl)}</p>
     <div class="scorecards">
@@ -141,7 +141,7 @@ function findingCard(f: Finding): string {
   const proof = f.verification.proof;
   return `<article class="finding" data-status="${f.status}" data-agent="${f.fixPlan.agentExecutable ? 'yes' : 'no'}">
   <header>
-    <span class="badge badge-${f.status}">${f.status.replace('-', ' ')}</span>
+    <span class="badge badge-${f.status}">${lucideIcon(statusIcon(f.status))}${f.status.replace('-', ' ')}</span>
     <span class="sev sev-${f.severity.toLowerCase()}">${f.severity}</span>
     <h3><code>${esc(f.id)}</code> ${esc(f.title)}</h3>
     <p class="tags">${f.type} · confidence ${f.confidence.toFixed(2)} · effort ${f.effortEstimate} · ${esc(f.affectedArea)}${f.fixPlan.agentExecutable ? ' · <span class="agentable">agent-fixable</span>' : ''}</p>
@@ -219,6 +219,26 @@ function esc(s: string): string {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+type IconName = 'shield-check' | 'scan-eye' | 'triangle-alert' | 'circle-x';
+
+function statusIcon(status: Finding['status']): IconName {
+  if (status === 'proof-confirmed') return 'shield-check';
+  if (status === 'pattern-confirmed') return 'scan-eye';
+  if (status === 'refuted' || status === 'triaged-out') return 'circle-x';
+  return 'triangle-alert';
+}
+
+/** Lucide-compatible inline paths keep the report readable and offline. */
+function lucideIcon(name: IconName): string {
+  const paths: Record<IconName, string> = {
+    'shield-check': '<path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z"/><path d="m9 12 2 2 4-4"/>',
+    'scan-eye': '<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/>',
+    'triangle-alert': '<path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3"/><path d="M12 9v4M12 17h.01"/>',
+    'circle-x': '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>',
+  };
+  return `<svg class="icon" aria-hidden="true" viewBox="0 0 24 24">${paths[name]}</svg>`;
+}
+
 /** Bold-only markdown, for the bottom-line bullets. */
 function mdLite(s: string): string {
   return esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -245,6 +265,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 var(-
 .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
 .top { border-bottom: 1px solid var(--line); padding: 32px 0 24px; background: var(--panel); }
 .eyebrow { margin: 0 0 6px; font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -3px; margin-right: 5px; }
 h1 { margin: 0 0 6px; font-size: clamp(24px, 4vw, 34px); letter-spacing: -.02em; }
 .meta { margin: 0; color: var(--muted); font-size: 13px; }
 .scorecards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 22px; }
