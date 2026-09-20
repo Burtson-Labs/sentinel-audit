@@ -406,6 +406,11 @@ export const timingUnsafeCompareRule: Rule = {
       // the comparison decides nothing an attacker could not already compute.
       if ([...wordTokens(left), ...wordTokens(right)].some((t) => SAME_ORIGIN_TOKENS.has(t))) continue;
       if (sameFieldComparison(left, right)) continue;
+      // `copiedToken === item.token` is transient UI feedback after a copy
+      // action, not an authentication decision. Timing advice here would add
+      // complexity without protecting a boundary.
+      const operandTokens = [...wordTokens(left), ...wordTokens(right)];
+      if (operandTokens.includes('copied') || wordTokens(m.lineText).includes('copied')) continue;
 
       const classes: Array<[string, OperandClass]> = [
         [left, classify(left)],
