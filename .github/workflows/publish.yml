@@ -1,8 +1,12 @@
 name: publish
 
-# Publishes @burtson-labs/sentinel-audit to npmjs the way the other Burtson Labs
-# packages are published: on every push to main, on the burtson-labs-runners
-# pool, with the organisation's NPM_TOKEN. A version already on the registry is
+# Publishes @burtson-labs/sentinel-audit to npmjs on every push to main with the
+# organisation's NPM_TOKEN, on a GitHub-hosted runner. The other Burtson Labs
+# packages publish from the burtson-labs-runners pool; that pool does not serve
+# public repositories (the GitHub default for runner groups), and the first
+# publish after this repository went public sat queued for 24 hours and was
+# cancelled. Nothing here needs the pool: the secret is an organisation secret,
+# not a runner property. A version already on the registry is
 # skipped, so only a version bump in package.json publishes, and re-running is
 # safe.
 #
@@ -28,7 +32,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: burtson-labs-runners
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

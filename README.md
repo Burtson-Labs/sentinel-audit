@@ -199,9 +199,13 @@ sentinel init-workflow           # write .github/workflows/sentinel.yml
   module, then cross-checked against every installed copy (hoisted, pnpm virtual
   store, nested). Licence inventory with copyleft flagging.
 - **Secrets** — 19 provider patterns plus generic assignment + entropy, over the
-  working tree. Every candidate gets a triage verdict with a reason.
-  `gitleaks`/`trufflehog` are used if present (they cover git history, which the
-  built-in scanner does not, and `COVERAGE.md` says so when they are absent).
+  working tree, and the provider patterns again over **git history**: every blob
+  reachable from any ref that is not identical to a working-tree file, so a
+  credential that was committed and later deleted is reported with its blob and
+  the commit that introduced it. Every candidate gets a triage verdict with a
+  reason. `gitleaks`/`trufflehog` are relayed instead when installed
+  (`--no-external-scanners` forces Sentinel's own pass), and `COVERAGE.md` says
+  which ran and what the history pass skipped.
   Keys the provider publishes **on purpose** are triaged out as *publishable by
   design*, not reported as credentials: PostHog project keys (`phc_`), Stripe
   publishable keys (`pk_live_`/`pk_test_` — the `sk_`/`rk_` secret keys are still
@@ -453,8 +457,9 @@ Sentinel's own `COVERAGE.md` says this per run; here it is in general:
 - **Advisory reachability is not proven.** An advisory is matched to the installed
   version; whether the vulnerable function is called from your code is a separate
   question.
-- **Secret scanning covers the working tree, not git history,** unless
-  `gitleaks`/`trufflehog` is installed.
+- **History scanning applies only the precise provider patterns**, within size,
+  count and time budgets; an unlabelled high-entropy secret that was committed
+  and deleted is not found unless `gitleaks`/`trufflehog` is installed.
 - **Containers are read, not built.** Base-image CVEs need a container scanner.
 - **Infrastructure outside the repository is invisible.** A CSP added by your CDN, a
   WAF, a NetworkPolicy — Sentinel cannot see these and says so rather than claiming

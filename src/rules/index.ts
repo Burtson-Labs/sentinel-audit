@@ -137,6 +137,10 @@ export function runRules(
  * bundler would write it.
  */
 export function isVendoredArtifact(path: string, text: string): boolean {
+  // A lockfile is machine-generated and full of registry and licence URLs. A
+  // real scan reported "plaintext HTTP endpoint" against a licence link inside
+  // package-lock.json — a URL nobody's code calls.
+  if (/(^|\/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|composer\.lock|Cargo\.lock|poetry\.lock|Pipfile\.lock|Gemfile\.lock|go\.sum|packages\.lock\.json)$/.test(path)) return true;
   if (/(^|\/)(vendor|vendors|third[_-]?party|externals?|bundled?|lib\/generated|\.yarn)\//i.test(path)) return true;
   if (/\.(min|bundle|chunk|umd|iife)\.(js|mjs|cjs|css)$/i.test(path)) return true;
   if (/(^|\/)(dist|build|out|release|public\/assets)\//.test(path)) return true;

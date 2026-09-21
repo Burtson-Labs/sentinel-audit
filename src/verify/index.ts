@@ -4,6 +4,7 @@ import { ensureDir, exists, writeFileEnsured, excerpt } from '../util/fsx.js';
 import { run, git } from '../util/exec.js';
 import { satisfies } from '../util/semver.js';
 import { gateSatisfied } from '../collectors/ci.js';
+import { SECRET_RULES } from '../collectors/secrets.js';
 import { analyseDockerfile } from '../collectors/docker.js';
 import { surveyCsp, surveyEdgeConfig } from '../util/edge.js';
 import { resolveInstalledVersions } from './installed.js';
@@ -15,7 +16,7 @@ import type {
   VerificationCheck,
   VerificationEvidence,
 } from '../types.js';
-import { parseProofOutput, SSRF_PAYLOADS } from './harness.js';
+import { parseProofOutput, SSRF_PAYLOADS , RESOLVE_HOOK_FILENAME, RESOLVE_HOOK_SOURCE } from './harness.js';
 import {
   buildGuardRejectionProof,
   buildHtmlSinkProof,
@@ -84,7 +85,7 @@ export function verify(input: VerifyInput): VerifyResult {
     'CI-NO-SECURITY-GATE': verifyCiGate,
     'DEP-ADVISORY': verifyAdvisory,
     'DOCKER-ROOT': verifyDockerRoot,
-    'SEC-SECRET-HISTORY': verifyExternalScanner,
+    'SEC-SECRET-HISTORY': verifySecretHistory,
   };
   const handler = byRule[input.ruleId] ?? (input.ruleId.startsWith('DEP-ADVISORY') ? verifyAdvisory : undefined);
   if (handler) return handler(input);
@@ -732,6 +733,51 @@ function verifyDockerRoot(input: VerifyInput): VerifyResult {
  * It is reported as `plausible` on purpose: presenting another tool's result as
  * Sentinel-verified would be borrowing credibility we did not earn.
  */
+/** History findings come from a relayed scanner or from Sentinel's own pass; each is checked the way it was produced. */
+function verifySecretHistory(input: VerifyInput): VerifyResult {
+  const native = input.hits.length > 0 && input.hits.every((h) => h.meta?.native === true);
+  return native && !input.ctx.secrets.externalScanner.available ? verifyHistoryNative(input) : verifyExternalScanner(input);
+}
+
+/**
+ * Re-read every cited blob from the object store and re-match the pattern that
+ * produced the hit. A history hit cannot be re-read by file:line — the file is
+ * gone — so the blob id is the citation, and `git cat-file` is the re-read.
+ */
+function verifyHistoryNative(input: VerifyInput): VerifyResult {
+  const { hits, ctx } = input;
+  const checks: VerificationCheck[] = [];
+  let confirmed = 0;
+  const sample = hits.slice(0, 8);
+  for (const h of sample) {
+    const blob = typeof h.meta?.blob === 'string' ? h.meta.blob : '';
+    const ruleId = typeof h.meta?.secretRule === 'string' ? h.meta.secretRule : '';
+    const rule = SECRET_RULES.find((r) => `SECRET-${r.id}` === ruleId);
+    const read = blob ? git(ctx.root, ['cat-file', '-p', blob], 10_000) : undefined;
+    const rematched = Boolean(read?.ok && rule && new RegExp(rule.re.source, rule.re.flags.replace('g', '')).test(read.stdout));
+    if (rematched) confirmed += 1;
+    checks.push({
+      description: `re-read blob ${blob || '?'} from the object store and re-matched ${rule?.description ?? ruleId}`,
+      outcome: rematched ? 'pass' : 'fail',
+      detail: `${h.file}@${blob}:${h.line} — ${rematched ? 'the pattern re-matched in the historical content' : read?.ok ? 'the pattern no longer matches the blob' : 'the blob could not be read'}`,
+    });
+  }
+  return {
+    verification: {
+      method: 'static-assertion',
+      claimType: 'factual',
+      performed: sample.length > 0,
+      result: sample.length > 0 && confirmed === sample.length ? 'confirmed' : confirmed > 0 ? 'plausible' : 'refuted',
+      checks,
+      notes:
+        confirmed === sample.length
+          ? `all ${sample.length} cited blob(s) were re-read from git's object store and the provider pattern re-matched. The values are in history and absent from the working tree, so rotation — not deletion — is what closes them`
+          : `${confirmed} of ${sample.length} cited blob(s) re-matched on re-read; the rest could not be read back or no longer match, so treat those as unproven`,
+    },
+    notes: [],
+  };
+}
+
 function verifyExternalScanner(input: VerifyInput): VerifyResult {
   const external = input.ctx.secrets.externalScanner;
   const hits = external.hits ?? [];
@@ -925,6 +971,9 @@ function executeProof(spec: ProofSpec, input: VerifyInput): ProofRun | null {
   ensureDir(input.proofDir);
   const scriptPath = join(input.proofDir, spec.filename);
   writeFileEnsured(scriptPath, spec.source);
+  // The proof registers this hook by relative path, so it lives beside the
+  // proofs and the "re-runnable by hand" claim holds for the directory as a whole.
+  writeFileEnsured(join(input.proofDir, RESOLVE_HOOK_FILENAME), RESOLVE_HOOK_SOURCE);
   const started = Date.now();
   const nodeArgs = proofNodeArgs();
   const res = run(process.execPath, [...nodeArgs, scriptPath], {

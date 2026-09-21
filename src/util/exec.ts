@@ -57,3 +57,30 @@ export function commandExists(cmd: string): boolean {
 export function git(root: string, args: string[], timeoutMs = 15_000): RunResult {
   return run('git', ['-C', root, ...args], { timeoutMs });
 }
+
+/**
+ * Like `run`, but stdout comes back as bytes. `git cat-file --batch` frames each
+ * object with a size in bytes, so slicing a UTF-8 decoded string by that size
+ * would drift on the first multi-byte character.
+ */
+export function runBytes(
+  cmd: string,
+  args: string[],
+  options: { cwd?: string; timeoutMs?: number; input?: string; maxBuffer?: number } = {},
+): { ok: boolean; code: number | null; stdout: Buffer; stderr: string } {
+  const res = spawnSync(cmd, args, {
+    cwd: options.cwd,
+    timeout: options.timeoutMs ?? 120_000,
+    env: process.env,
+    maxBuffer: options.maxBuffer ?? 256 * 1024 * 1024,
+    shell: false,
+    input: options.input,
+    windowsHide: true,
+  });
+  return {
+    ok: !res.error && res.status === 0,
+    code: res.status,
+    stdout: Buffer.isBuffer(res.stdout) ? res.stdout : Buffer.alloc(0),
+    stderr: res.stderr ? res.stderr.toString('utf8') : res.error ? String(res.error.message) : '',
+  };
+}

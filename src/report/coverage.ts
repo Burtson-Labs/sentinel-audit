@@ -59,8 +59,12 @@ export function buildCoverage(ctx: ScanContext, findings: Finding[]): CoverageRe
       },
       {
         item: 'Secret scanning (git history)',
-        status: ctx.secrets.externalScanner.available ? 'covered' : 'not-covered',
-        detail: ctx.secrets.externalScanner.note,
+        status: ctx.secrets.externalScanner.available || (ctx.secrets.history !== undefined && !ctx.secrets.history.capped) ? 'covered' : ctx.secrets.history !== undefined ? 'partial' : 'not-covered',
+        detail: ctx.secrets.externalScanner.available
+          ? ctx.secrets.externalScanner.note
+          : ctx.secrets.history !== undefined
+            ? `Sentinel's own pass over every blob reachable from any ref, precise provider patterns only — ${ctx.secrets.history.note}`
+            : `not a git repository; ${ctx.secrets.externalScanner.note}`,
       },
       {
         item: 'CI gate analysis',
@@ -123,7 +127,13 @@ export function buildCoverage(ctx: ScanContext, findings: Finding[]): CoverageRe
   // ---- follow-ups --------------------------------------------------------
   const recommendedFollowUps: string[] = [];
   if (!ctx.secrets.externalScanner.available) {
-    recommendedFollowUps.push('Run gitleaks or trufflehog over full git history — Sentinel only scanned the working tree, and a rotated-but-committed credential is invisible to a working-tree scan.');
+    recommendedFollowUps.push(
+      ctx.secrets.history === undefined
+        ? 'Run the scan inside the git repository (or run gitleaks/trufflehog over it) — this was not a git work tree, so history could not be examined and a rotated-but-committed credential would be invisible.'
+        : ctx.secrets.history.capped
+          ? `Run gitleaks or trufflehog over full git history — Sentinel's own pass hit its budget (${ctx.secrets.history.blobsSkipped} blob(s) not read), so history coverage is partial.`
+          : "Run gitleaks or trufflehog over git history if you want generic high-entropy detection there — Sentinel's own pass applies the precise provider patterns only.",
+    );
   }
   if (!ctx.deps.auditAvailable) {
     recommendedFollowUps.push('Re-run with registry access so dependency advisories are collected; this report makes no claim about advisory status.');
