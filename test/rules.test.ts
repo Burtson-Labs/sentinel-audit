@@ -1191,3 +1191,32 @@ describe('a rule does not report its own description', () => {
     expect(hits.length).toBeGreaterThan(0);
   });
 });
+
+describe('three shapes real scans got wrong', () => {
+  it('excludes lockfiles from the code rules — a licence URL in package-lock.json is not an endpoint', () => {
+    expect(isVendoredArtifact('package-lock.json', '{ "license": "http://geraintluff.github.io/tv4/LICENSE.txt" }')).toBe(true);
+    expect(isVendoredArtifact('pnpm-lock.yaml', 'lockfileVersion: 9')).toBe(true);
+    expect(isVendoredArtifact('src/lock.ts', 'export const lock = 1;')).toBe(false);
+  });
+
+  it('does not report two properties of one object as an authenticator comparison', () => {
+    expect(sameFieldComparison('authCtx.apiKey', 'authCtx.token')).toBe(true);
+    expect(sameFieldComparison('req.headers.authorization', 'config.apiToken')).toBe(false);
+    expect(sameFieldComparison('supplied', 'stored')).toBe(false);
+    const hits = ruleById('SEC-TIMING-UNSAFE-COMPARE')!.scan!(
+      fileCtx('src/authGateway.ts', "import { createHmac } from 'node:crypto';\nexport function same(authCtx: { apiKey: string; token: string }): boolean {\n  return authCtx.apiKey === authCtx.token || false;\n}\n"),
+    );
+    expect(hits).toEqual([]);
+  });
+
+  it('does not report Array.prototype.join as path construction, but still reports path.join and a bare join', () => {
+    const arrayJoin = ruleById('SEC-PATH-TRAVERSAL')!.scan!(
+      fileCtx('src/git.ts', "export function ignored(root: string, paths: string[], filePath: string): string {\n  return run('git', ['-C', root, 'check-ignore', '--stdin'], { input: `${paths.slice(0, 5000).join('\\n')}\\n` }).stdout + filePath;\n}\n"),
+    );
+    expect(arrayJoin).toEqual([]);
+    const pathJoin = ruleById('SEC-PATH-TRAVERSAL')!.scan!(fileCtx('src/files.ts', "import path from 'node:path';\nexport const target = (root: string, filePath: string) => path.join(root, filePath);\n"));
+    expect(pathJoin.length).toBe(1);
+    const bareJoin = ruleById('SEC-PATH-TRAVERSAL')!.scan!(fileCtx('src/files.ts', "import { join } from 'node:path';\nexport const target = (root: string, filename: string) => join(root, filename);\n"));
+    expect(bareJoin.length).toBe(1);
+  });
+});

@@ -297,7 +297,13 @@ export function classifyOperand(identifier: string, fileDoesCrypto = true, maske
  */
 export function sameFieldComparison(left: string, right: string): boolean {
   const tail = (p: string): string => (p.split('.').pop() ?? p).toLowerCase();
-  return left.includes('.') && right.includes('.') && tail(left) === tail(right) && left !== right;
+  const receiver = (p: string): string => p.slice(0, p.lastIndexOf('.'));
+  if (!left.includes('.') || !right.includes('.') || left === right) return false;
+  if (tail(left) === tail(right)) return true;
+  // `authCtx.apiKey === authCtx.token`: two properties of the same object. Both
+  // values are already in the process's hands, so nothing is being presented
+  // for authentication — a real scan reported this as a High timing leak.
+  return receiver(left) !== '' && receiver(left) === receiver(right);
 }
 
 /**

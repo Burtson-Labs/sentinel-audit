@@ -493,9 +493,13 @@ export const pathTraversalRule: Rule = {
   appliesTo: JS_TS,
   scan: (ctx) => {
     const hits: RuleHit[] = [];
-    const re = /\b(?:path\.)?(join|resolve)\s*\(([^)]{0,200})\)/g;
+    // A bare `join(`/`resolve(` (imported from node:path) or one on a receiver
+    // named like a path module. `.join(` on anything else is Array.prototype.join
+    // — `paths.slice(i, i + 5000).join('\n')` was reported as path construction
+    // because the boundary before `join` did not exclude the dot.
+    const re = /(^|[^\w$.])(?:(?:[\w$]*[Pp]ath|posix|win32)\s*\.\s*)?(join|resolve)\s*\(([^)]{0,200})\)/g;
     for (const m of matchCode(ctx.src, ctx.masked, re)) {
-      const args = m.match[2] ?? '';
+      const args = m.match[3] ?? '';
       if (!USER_INPUT.test(args) && !USER_INPUT.test(m.lineText)) continue;
       const confined = /startsWith\(|realpath|isInside|withinRoot|assertInside|relative\(/i.test(
         ctx.src.slice(Math.max(0, m.index - 400), m.index + 400),
@@ -506,7 +510,7 @@ export const pathTraversalRule: Rule = {
           ctx.file.path,
           m.line,
           excerpt(m.lineText),
-          `path.${m.match[1]} over caller-influenced input${confined ? ' (a containment check appears nearby — verify it runs on this path)' : ' with no containment check within 400 characters'}`,
+          `path.${m.match[2]} over caller-influenced input${confined ? ' (a containment check appears nearby — verify it runs on this path)' : ' with no containment check within 400 characters'}`,
           { confinedNearby: confined, inTest: ctx.isTest },
         ),
       );
