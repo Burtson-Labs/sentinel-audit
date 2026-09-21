@@ -25,9 +25,46 @@
  *    That asymmetry is enforced in src/verify/index.ts, not here.
  */
 
+/**
+ * ESM resolve hook written next to every proof script.
+ *
+ * TypeScript ESM projects import sibling modules as `./x.js` while the file on
+ * disk is `x.ts` — the compiler rewrites nothing, and Node resolves the
+ * specifier literally. So the first import inside the module under test failed,
+ * the harness fell through to a CJS require that cannot load an ESM `.ts` file,
+ * and every proof against such a project ended "could not load outside its
+ * bundler" — including Sentinel's own HTML renderer. The hook retries a missing
+ * relative `.js`/`.mjs` as `.ts`/`.tsx`/`.mts`, and changes nothing else:
+ * an import that is missing under every spelling still fails as before.
+ */
+export const RESOLVE_HOOK_FILENAME = '_sentinel-resolve-hook.mjs';
+export const RESOLVE_HOOK_SOURCE = [
+  '// Sentinel proof harness: resolve ./x.js to x.ts for TypeScript ESM projects.',
+  'export async function resolve(specifier, context, next) {',
+  '  try {',
+  '    return await next(specifier, context);',
+  '  } catch (err) {',
+  "    if (err && err.code === 'ERR_MODULE_NOT_FOUND' && /^[./]/.test(specifier) && /\\.(?:js|mjs)$/.test(specifier)) {",
+  "      for (const ext of ['.ts', '.tsx', '.mts']) {",
+  '        try {',
+  "          return await next(specifier.replace(/\\.(?:js|mjs)$/, ext), context);",
+  '        } catch {',
+  '          // try the next spelling',
+  '        }',
+  '      }',
+  '    }',
+  '    throw err;',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
 export const HARNESS_PREAMBLE = `import Module from 'node:module';
-import { createRequire } from 'node:module';
+import { createRequire, register } from 'node:module';
 import { pathToFileURL } from 'node:url';
+
+// ./x.js -> x.ts for TypeScript ESM projects; see the hook file beside this script.
+register('./${RESOLVE_HOOK_FILENAME}', import.meta.url);
 
 const __stubbed = [];
 const __origLoad = Module._load;

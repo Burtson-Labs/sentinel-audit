@@ -31,6 +31,7 @@ SCAN OPTIONS
   --no-llm                skip the model-assisted pass (deterministic only)
   --no-proofs             skip generating and executing proof scripts
   --offline               skip anything needing network access (dependency advisories)
+  --no-external-scanners  do not run gitleaks/trufflehog even if installed; Sentinel scans git history itself
   --bandit-cli <path>     path to the Bandit CLI entrypoint used as the coding/review agent
   --max-review-files <n>  how many files the model review pass may read (default: 4)
   --llm-timeout <ms>      per-call budget for the model pass (default: 300000). Scan wall
@@ -155,6 +156,7 @@ async function runScan(args: Args): Promise<number> {
     noLlm: Boolean(args.flags.get('no-llm')),
     noProofs: Boolean(args.flags.get('no-proofs')),
     offline: Boolean(args.flags.get('offline')),
+    noExternalScanners: Boolean(args.flags.get('no-external-scanners')),
     banditCli: args.flags.has('bandit-cli') ? String(args.flags.get('bandit-cli')) : undefined,
     maxReviewFiles: Number(args.flags.get('max-review-files') ?? 4),
     llmTimeoutMs: args.flags.has('llm-timeout') ? Number(args.flags.get('llm-timeout')) : undefined,

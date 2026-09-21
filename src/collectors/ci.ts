@@ -189,13 +189,14 @@ function markGates(haystack: string, gates: WorkflowSummary['gates']): void {
   for (const key of Object.keys(GATE_PATTERNS) as Array<keyof WorkflowSummary['gates']>) {
     if (GATE_PATTERNS[key].test(haystack)) gates[key] = true;
   }
-  // A Sentinel scan is static analysis *and* a dependency audit — advisories are
-  // fetched unless `--offline` — so a repository that runs it on pull requests
-  // was being told, by the tool doing the auditing, that its PR gate does not
-  // audit. It is not a history-aware secret scan unless gitleaks or trufflehog
-  // is on the runner, so `secrets` is left to those patterns.
+  // A Sentinel scan is static analysis, a dependency audit (advisories are
+  // fetched unless `--offline`) and a secret scan that covers git history
+  // itself — every historical blob not identical to a working-tree file is
+  // checked with the precise provider patterns — so a repository that runs it
+  // on pull requests has all three gates.
   if (SENTINEL_SCAN.test(haystack)) {
     gates.sast = true;
+    gates.secrets = true;
     if (!/--offline\b/.test(haystack)) gates.audit = true;
   }
 }

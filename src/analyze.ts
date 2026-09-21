@@ -91,6 +91,7 @@ export function analyze(ctx: ScanContext, repo: RuleRepoContext, options: Analyz
     ...candidatesFromCi(ctx),
     ...candidatesFromDocker(ctx),
     ...candidatesFromLicenses(ctx),
+    ...candidatesFromHistory(ctx),
   ];
 
   const dropped: AnalyzeResult['dropped'] = [];
@@ -844,6 +845,79 @@ function candidatesFromDocker(ctx: ScanContext): CandidateFinding[] {
   }
 
   return out;
+}
+
+/**
+ * Sentinel's own git-history pass. Only produced when no external history-aware
+ * scanner ran (that path is `SEC-SECRET-HISTORY` via the relay above), and only
+ * when the pass found something: every hit is a value that is in history but no
+ * longer in the working tree, so deleting the file has already happened and
+ * rotation is what is left.
+ */
+export function candidatesFromHistory(ctx: ScanContext): CandidateFinding[] {
+  const history = ctx.secrets.history;
+  if (!history || history.hits.length === 0 || ctx.secrets.externalScanner.available) return [];
+  const dismissed = history.hits.filter((h) => h.likelyFalsePositive);
+  const surviving = history.hits.filter((h) => !h.likelyFalsePositive);
+  const inTests = surviving.filter((h) => h.inTestPath);
+  const live = surviving.filter((h) => !h.inTestPath);
+  const everythingDismissed = surviving.length === 0;
+  const testOnly = live.length === 0 && inTests.length > 0;
+  const shown = (live.length > 0 ? live : inTests.length > 0 ? inTests : dismissed).slice(0, 8);
+  const where = (h: (typeof shown)[number]): string => `${h.file}@${h.blob ?? '?'}:${h.line}`;
+  const describe = (h: (typeof shown)[number]): string =>
+    `${where(h)} — ${h.description} (${h.masked}${h.commit ? `, introduced in ${h.commit}` : ''})${
+      h.likelyFalsePositive ? ` — dismissed: ${excerpt(h.falsePositiveReason ?? '', 90)}` : h.inTestPath ? ' — in a test/fixture path' : ''
+    }`;
+  return [
+    {
+      ruleId: 'SEC-SECRET-HISTORY',
+      title:
+        live.length > 0
+          ? `${live.length} credential-shaped value(s) in git history that are no longer in the working tree`
+          : testOnly
+            ? `${inTests.length} credential-shaped value(s) in git history, all in test or fixture paths`
+            : `${dismissed.length} git-history secret match(es) triaged out as non-credentials`,
+      type: 'Secret',
+      severity: live.length > 0 ? 'High' : 'Info',
+      area: everythingDismissed || testOnly ? 'Tests' : 'Repository',
+      labels: ['security', 'secrets', 'git-history'],
+      evidence: `${shown.map(describe).join('; ')}${shown.length < history.hits.length ? ` (+${history.hits.length - shown.length} more)` : ''}`,
+      why:
+        'A credential that reached git history stays in every clone and every fork, and deleting the file does not remove it. These values are no longer in the working tree — the deletion already happened — so the only thing left to do is rotate them. Sentinel read the historical blobs itself and applied the same placeholder, publishable-key and test-path triage it applies to the working tree.',
+      recommendation:
+        'Rotate every value listed and confirm the old one is rejected, then decide whether rewriting history is worth the disruption — rotation is the part that closes the exposure; the rewrite only tidies up after it. The blob and commit ids are cited so you can inspect each one with git show.',
+      acceptance: [
+        'every value listed has been rotated and the old value is proven invalid',
+        'a history-aware secret scan runs in CI and fails the build on a new finding',
+        'the coverage report no longer lists these blobs, or lists them as accepted false positives',
+      ],
+      effort: 'M',
+      claimType: 'factual',
+      source: 'collector',
+      inTestCodeOnly: testOnly,
+      hits: shown.map((h) => ({
+        ruleId: 'SEC-SECRET-HISTORY',
+        file: h.file,
+        line: h.line,
+        excerpt: h.masked,
+        message: `${h.description} in historical blob ${h.blob ?? '?'}${h.commit ? ` (introduced in ${h.commit})` : ''}`,
+        meta: { blob: h.blob ?? '', commit: h.commit ?? '', secretRule: h.ruleId, native: true, inTest: h.inTestPath, dismissed: h.likelyFalsePositive },
+      })),
+      locations: shown.map((h) => ({ file: h.file, startLine: h.line, excerpt: `${h.description}: ${h.masked} (blob ${h.blob ?? '?'})` })),
+      triage: everythingDismissed
+        ? {
+            suppressed: true,
+            reason: `every one of the ${dismissed.length} git-history match(es) was dismissed by Sentinel's triage (top reason: ${excerpt(dismissed[0]?.falsePositiveReason ?? 'n/a', 120)})`,
+            evidenceCited: `${dismissed[0]?.file ?? '.git'}:${dismissed[0]?.line ?? 1}`,
+            by: 'heuristic',
+          }
+        : undefined,
+      notes: [
+        `Sentinel scanned git history itself (no external history-aware scanner was installed): ${history.note}. Only the precise provider patterns were applied, and values still present in the working tree are reported under the working-tree finding, not here.`,
+      ],
+    },
+  ];
 }
 
 export function candidatesFromLicenses(ctx: ScanContext): CandidateFinding[] {

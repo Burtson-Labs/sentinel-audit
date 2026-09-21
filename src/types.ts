@@ -340,6 +340,10 @@ export interface SecretCandidate {
    * at High is how a secret section loses its reader.
    */
   inTestPath: boolean;
+  /** Set for a match found in git history: the blob it was read from (short id). */
+  blob?: string;
+  /** The first commit that introduced that blob, when it could be found (short id). */
+  commit?: string;
 }
 
 /**
@@ -383,6 +387,22 @@ export interface SecretResult {
     hits?: ExternalScannerHit[];
     hitsParsed?: boolean;
   };
+  /**
+   * Sentinel's own pass over git history: every blob reachable from any ref that
+   * is not byte-identical to a file in the working tree, checked with the precise
+   * provider patterns. Absent when the tree is not a git repository or a
+   * history-aware external scanner already covered it.
+   */
+  history?: SecretHistoryScan;
+}
+
+export interface SecretHistoryScan {
+  blobsExamined: number;
+  /** Blobs past the size, count or time budget; the coverage report says so. */
+  blobsSkipped: number;
+  capped: boolean;
+  hits: SecretCandidate[];
+  note: string;
 }
 
 export interface WorkflowJobStep {

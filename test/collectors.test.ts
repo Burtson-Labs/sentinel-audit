@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseAuditJson, copyleftDependencies } from '../src/collectors/dependencies.js';
-import { scanText, triageCandidate, documentationLoopbackHost, looksLikeSentence, SECRET_RULES } from '../src/collectors/secrets.js';
+import { scanText, triageCandidate, documentationLoopbackHost, looksLikeSentence, insideRegexLiteral, triageExternalHit, SECRET_RULES } from '../src/collectors/secrets.js';
 import { summariseWorkflow, gateSatisfied } from '../src/collectors/ci.js';
 import { redactRepoUrl } from '../src/collectors/recon.js';
 import { candidatesFromLicenses } from '../src/analyze.js';
@@ -640,11 +640,11 @@ describe('a Sentinel scan on pull requests is an audit gate', () => {
   const wf = (run: string): string =>
     ['name: audit', 'on:', '  pull_request:', 'jobs:', '  audit:', '    runs-on: ubuntu-latest', '    steps:', '      - uses: actions/checkout@v4', `      - run: ${run}`, ''].join('\n');
 
-  it('counts the shipped template invocation as sast and audit, not secrets', () => {
+  it('counts the shipped template invocation as sast, audit and secrets — the scan covers git history itself', () => {
     const s = summariseWorkflow('.github/workflows/audit.yml', wf('npx --yes sentinel-audit scan . --profile owasp-asvs --no-llm'));
     expect(s.gates.sast).toBe(true);
     expect(s.gates.audit).toBe(true);
-    expect(s.gates.secrets).toBe(false);
+    expect(s.gates.secrets).toBe(true);
   });
 
   it('counts a global install, the scoped package, and the build-output invocation', () => {
@@ -698,5 +698,53 @@ describe('licence findings cite the artefact they were read from', () => {
     expect(c).toBeDefined();
     expect(c!.evidence).toMatch(/^package\.json/);
     expect(c!.evidence).toContain('gpl-thing@2.0.0 — GPL-3.0-only');
+  });
+});
+
+describe('a provider marker inside a regular-expression literal is a pattern, not a credential', () => {
+  const run = (path: string, text: string): SecretCandidate[] => {
+    const out: SecretCandidate[] = [];
+    scanText(path, text, out);
+    return out;
+  };
+
+  it('insideRegexLiteral tells a regex body from a string body on the same line', () => {
+    expect(insideRegexLiteral("const PEM = /-----BEGIN PRIVATE KEY-----/;", '-----BEGIN PRIVATE KEY-----')).toBe(true);
+    expect(insideRegexLiteral("const PEM = '-----BEGIN PRIVATE KEY-----';", '-----BEGIN PRIVATE KEY-----')).toBe(false);
+    expect(insideRegexLiteral(" * `.Replace(\"-----BEGIN PRIVATE KEY-----\", \"\")`", '-----BEGIN PRIVATE KEY-----')).toBe(false);
+  });
+
+  it('dismisses a PEM header in a detector regex, in Sentinel’s own scan', () => {
+    const hits = run('src/detect.ts', 'const PEM_BLOCK = /-----BEGIN PRIVATE KEY-----\\s*\\n/;\n');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.likelyFalsePositive)).toBe(true);
+    expect(hits[0]!.falsePositiveReason).toMatch(/regular-expression literal/);
+  });
+
+  it('dismisses the same shape when relayed from gitleaks with the line text', () => {
+    const relayed = triageExternalHit({
+      ruleId: 'private-key',
+      description: 'Identified a Private Key',
+      value: '-----BEGIN PRIVATE KEY-----',
+      lineText: 'const PEM_BLOCK = /-----BEGIN (?:RSA |EC )?PRIVATE KEY-----\\s*\\n/;',
+      path: 'src/detect.ts',
+      line: 12,
+    });
+    expect(relayed.likelyFalsePositive).toBe(true);
+    expect(relayed.falsePositiveReason).toMatch(/regular-expression literal/);
+    const inComment = triageExternalHit({
+      ruleId: 'private-key',
+      description: 'Identified a Private Key',
+      value: '-----BEGIN PRIVATE KEY-----',
+      lineText: ' * `.Replace("-----BEGIN PRIVATE KEY-----", "")`, `startsWith(\'-----BEGIN RSA PRIVATE KEY-----\')`.',
+      path: 'src/collectors/secrets.ts',
+      line: 100,
+    });
+    expect(inComment.likelyFalsePositive, 'a header used as a token in a docblock is delimiter handling').toBe(true);
+  });
+
+  it('still reports a real key block in a JS file', () => {
+    const hits = run('src/keys.ts', "export const KEY = `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n-----END PRIVATE KEY-----`;\n");
+    expect(hits.some((h) => !h.likelyFalsePositive)).toBe(true);
   });
 });

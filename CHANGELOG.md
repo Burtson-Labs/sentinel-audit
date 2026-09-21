@@ -5,6 +5,53 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Git history is scanned by Sentinel itself; proofs reach TypeScript ESM; four more real-scan defects
+
+- **Secrets in git history no longer depend on gitleaks being installed.** A
+  credential that was committed and later deleted stays in every clone, and until
+  now Sentinel only saw it when an external scanner happened to be on the machine
+  — the coverage report said so on every run, and the CI collector refused to
+  count a Sentinel scan as a secrets gate for the same reason. The secrets
+  collector now lists every blob reachable from any ref, drops the ones that are
+  byte-identical to a working-tree file, and checks the rest with the precise
+  provider patterns (generic high-entropy matching against every historical
+  revision of every file would be noise). A value the working tree already
+  reported is not reported again from history. Hits carry the blob id and the
+  commit that introduced it; the verifier re-reads each cited blob from the object
+  store and re-matches the pattern, so the finding is `pattern-confirmed` on the
+  same terms as a working-tree one. Size (512 KiB per blob), count (5,000 blobs)
+  and time (15 s) budgets cap the work, and when a cap is hit the finding and the
+  coverage report both say so. On the repositories tried the pass costs well
+  under a second. `gitleaks`/`trufflehog` are still relayed when installed;
+  `--no-external-scanners` forces Sentinel's own pass. A Sentinel scan on pull
+  requests now satisfies the `secrets` gate as well as `sast` and `audit`.
+- **Proofs could not load TypeScript ESM projects.** Such projects import sibling
+  modules as `./x.js` while the file on disk is `x.ts`; Node resolves the
+  specifier literally, so the first import inside the module under test failed
+  and every proof against such a project ended "could not load outside its
+  bundler" — including Sentinel's own HTML renderer. The harness now registers a
+  resolve hook, written beside the proof scripts, that retries a missing relative
+  `.js`/`.mjs` as `.ts`/`.tsx`/`.mts`. Nothing else changes. The self-scan's
+  "hand-rolled markup generator feeds a raw-HTML sink" is now **refuted** by an
+  executed proof rather than left plausible.
+- **A licence URL inside `package-lock.json` was a "plaintext HTTP endpoint".**
+  Lockfiles are machine-generated and full of registry and licence URLs nobody's
+  code calls; they are now excluded from the code rules like other generated
+  artefacts, and named in the coverage report.
+- **Two properties of one object were an "authenticator compared with a
+  short-circuiting operator".** `authCtx.apiKey === authCtx.token` compares two
+  values the process already holds; nothing is being presented for
+  authentication. Same-receiver comparisons join the same-field exemption.
+- **`Array.prototype.join` was path construction.** `paths.slice(i, i + 5000)
+  .join('\n')` was reported as `path.join` over caller-influenced input because
+  the pattern's word boundary did not exclude the dot. A bare `join(`/`resolve(`
+  or one on a receiver named like a path module still matches.
+- **The publish job sat queued for 24 hours after the repository went public.**
+  The `burtson-labs-runners` pool does not serve public repositories (GitHub's
+  default for runner groups), so the job was never picked up and was cancelled.
+  Nothing in the job needs the pool — the token is an organisation secret, not a
+  runner property — so it now runs on a GitHub-hosted runner.
+
 ### Sentinel scanned itself and three real repositories; eight defects in its own output
 
 Each of these is a case where the tool was right about the text and wrong about

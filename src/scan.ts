@@ -35,6 +35,12 @@ export interface ScanOptions {
   noProofs?: boolean;
   /** Skip network-dependent collectors. */
   offline?: boolean;
+  /**
+   * Do not run gitleaks/trufflehog even if installed. Sentinel then scans git
+   * history itself with its precise provider patterns — the same pass a runner
+   * without those tools gets — which is also how that pass is tested.
+   */
+  noExternalScanners?: boolean;
   /** Path to the Bandit CLI entrypoint. */
   banditCli?: string;
   /** How many files the model review pass may read. */
@@ -78,7 +84,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
   progress('secrets…');
   const gitignored = gitignoredPredicate(root, reconOut.files.map((f) => f.path));
   const isTest = testPathPredicate(profile);
-  const secretsOut = collectSecrets(root, reconOut.files, { gitignored, isTest });
+  const secretsOut = collectSecrets(root, reconOut.files, { gitignored, isTest, useExternalScanner: !options.noExternalScanners });
 
   progress('ci workflows…');
   const ciOut = collectCi(root, reconOut.recon.workflows);

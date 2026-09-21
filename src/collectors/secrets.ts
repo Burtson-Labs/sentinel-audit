@@ -1,11 +1,12 @@
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { extname, join } from 'node:path';
 import { readTextSafe, type RepoFile } from '../util/fsx.js';
 import { maskSecret, shannonEntropy } from '../util/hash.js';
 import { maskSource } from '../util/lex.js';
-import { commandExists, run } from '../util/exec.js';
+import { commandExists, git, run, runBytes } from '../util/exec.js';
 import { credentialUrlHost, isLoopbackOrReserved } from '../util/hosts.js';
 import { isTestOrFixturePath } from '../util/testpaths.js';
-import type { CollectorRun, ExternalScannerHit, SecretCandidate, SecretResult } from '../types.js';
+import type { CollectorRun, ExternalScannerHit, SecretCandidate, SecretHistoryScan, SecretResult } from '../types.js';
 
 /**
  * Secret scanning: high-precision provider patterns first, generic
@@ -232,6 +233,10 @@ export function collectSecrets(
   const candidates: SecretCandidate[] = [];
   let filesScanned = 0;
   const notExamined: string[] = ['binary files and lockfiles'];
+  // Fingerprints of every value seen in the working tree, so the history pass
+  // reports only what is *no longer* in the tree rather than every old revision
+  // of a value the tree scan already reported.
+  const known = new Set<string>();
 
   for (const f of files) {
     if (f.binary) continue;
@@ -242,12 +247,14 @@ export function collectSecrets(
     const text = readTextSafe(f.absolute, 1_000_000);
     if (text === null) continue;
     filesScanned += 1;
-    scanText(f.path, text, candidates, { gitignored: options.gitignored, isTest: options.isTest });
+    scanText(f.path, text, candidates, { gitignored: options.gitignored, isTest: options.isTest, collectFingerprints: known });
   }
 
   const external = probeExternalScanner(root, options.useExternalScanner ?? true, { isTest: options.isTest });
-  // Only one of these two statements can be true, and the coverage report must
-  // not print both: either a history-aware scanner ran, or it did not.
+  let history: SecretHistoryScan | undefined;
+  // Exactly one of these statements is true, and the coverage report must not
+  // print two: an external history-aware scanner ran, Sentinel scanned history
+  // itself, or the working tree is not a repository.
   if (external.available) {
     notExamined.push(
       external.hitsParsed === true
@@ -255,13 +262,25 @@ export function collectSecrets(
         : `individual ${external.name} results are not re-derived as Sentinel findings — it reported ${external.findings}, and the tool should be run directly for the details`,
     );
   } else {
-    notExamined.push(
-      `git history — only the working tree was scanned. No history-aware scanner (${external.name}) was installed, so a credential that was committed and later deleted would not be found`,
-    );
+    history = scanGitHistory(root, { isTest: options.isTest, known });
+    if (history) {
+      const capNote = history.capped
+        ? ` (capped: ${history.blobsSkipped} blob(s) past the size, count or time budget were not read)`
+        : history.blobsSkipped > 0
+          ? ` (${history.blobsSkipped} oversized blob(s) not read)`
+          : '';
+      notExamined.push(
+        `git history — Sentinel scanned it itself: ${history.blobsExamined} historical blob(s) not identical to a working-tree file were checked with the precise provider patterns${capNote}. Generic high-entropy patterns are not applied to history, so an unlabelled secret that was committed and later deleted would not be found; no external history-aware scanner (${external.name}) was installed`,
+      );
+    } else {
+      notExamined.push(
+        `git history — only the working tree was scanned: this is not a git repository, and no history-aware scanner (${external.name}) was installed`,
+      );
+    }
   }
 
   return {
-    secrets: { candidates, filesScanned, externalScanner: external },
+    secrets: { candidates, filesScanned, externalScanner: external, history },
     run: {
       name: 'secrets',
       ok: true,
@@ -276,9 +295,18 @@ export function scanText(
   path: string,
   text: string,
   out: SecretCandidate[],
-  options: { gitignored?: (p: string) => boolean; isTest?: (p: string) => boolean } = {},
+  options: {
+    gitignored?: (p: string) => boolean;
+    isTest?: (p: string) => boolean;
+    /** Which patterns to apply; defaults to all of them. */
+    rules?: SecretRule[];
+    /** Values whose fingerprint is here are not reported again. */
+    skipFingerprints?: Set<string>;
+    /** Every value found is fingerprinted into this set. */
+    collectFingerprints?: Set<string>;
+  } = {},
 ): void {
-  const { gitignored, isTest = isTestOrFixturePath } = options;
+  const { gitignored, isTest = isTestOrFixturePath, rules = SECRET_RULES, skipFingerprints, collectFingerprints } = options;
   const isExample = SAFE_PATH.test(path) || /\.example$|\.sample$|\.template$/.test(path);
   const inTestPath = isTest(path);
   const isDocPath = DOC_SAMPLE_PATH.test(path);
@@ -288,12 +316,20 @@ export function scanText(
   // the line-prefix check below.
   const commentMask = JS_FAMILY.test(path) ? maskSource(text).codeAndStrings : null;
 
-  for (const rule of SECRET_RULES) {
+  for (const rule of rules) {
     const rx = new RegExp(rule.re.source, rule.re.flags.includes('g') ? rule.re.flags : `${rule.re.flags}g`);
     let m: RegExpExecArray | null;
     while ((m = rx.exec(text)) !== null) {
       const value = m[rule.group];
       if (!value) continue;
+      if (skipFingerprints || collectFingerprints) {
+        const fp = fingerprint(value);
+        if (skipFingerprints?.has(fp)) {
+          if (m.index === rx.lastIndex) rx.lastIndex += 1;
+          continue;
+        }
+        collectFingerprints?.add(fp);
+      }
       const line = text.slice(0, m.index).split('\n').length;
       const lineText = lines[line - 1] ?? '';
       // Prose inside a comment is not a credential. A docblock sentence —
@@ -332,6 +368,165 @@ export function scanText(
       if (m.index === rx.lastIndex) rx.lastIndex += 1;
     }
   }
+}
+
+/**
+ * Is `value` (or its opening characters, when the scanner reported a
+ * differently-bounded match) inside a regex literal on this line? The lexer
+ * blanks regex bodies in the comments-blanked view but keeps them in the
+ * strings view, and only regex bodies have that combination.
+ */
+export function insideRegexLiteral(lineText: string, value: string): boolean {
+  const lex = maskSource(lineText);
+  const inRegex = (i: number): boolean => lex.codeAndStrings[i] === ' ' && lex.strings[i] !== ' ' && lineText[i] !== ' ';
+  // The scanner's match may be bounded differently from the literal on the
+  // line (`-----BEGIN (?:RSA )?PRIVATE` vs `-----BEGIN PRIVATE`), so probe with
+  // progressively shorter prefixes and accept any occurrence inside a regex body.
+  for (const probe of [value, value.slice(0, 12), value.slice(0, 8)]) {
+    if (probe.length < 6) continue;
+    for (let at = lineText.indexOf(probe); at >= 0; at = lineText.indexOf(probe, at + 1)) {
+      if (inRegex(at)) return true;
+    }
+  }
+  return false;
+}
+
+/** A stable, non-reversible identity for a value, kept in memory only — never written to a report. */
+function fingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 24);
+}
+
+const HISTORY_MAX_BLOBS = 5_000;
+const HISTORY_MAX_BLOB_BYTES = 512 * 1024;
+const HISTORY_CHUNK_BYTES = 24 * 1024 * 1024;
+const HISTORY_TIME_BUDGET_MS = 15_000;
+const PRECISE_RULES = SECRET_RULES.filter((r) => r.precise);
+const OBJECT_LINE = /^([0-9a-f]{40}) (\w+) (\d+)$/;
+
+/**
+ * Sentinel's own pass over git history.
+ *
+ * A credential that was committed and later deleted is still in every clone,
+ * and until now Sentinel only saw it if gitleaks or trufflehog happened to be
+ * installed — the coverage report said so on every run, and the CI collector
+ * refused to count a Sentinel scan as a secrets gate for the same reason.
+ *
+ * The pass is deliberately narrow, so it stays cheap and its verdicts stay
+ * trustworthy: only blobs reachable from some ref that are not byte-identical
+ * to a file in the working tree (those were scanned already), only paths the
+ * tree scan would read, only the precise provider patterns (a generic
+ * high-entropy match against every historical revision of every file is
+ * noise), and a value already reported from the tree is not reported again
+ * from history. Size, count and time budgets cap the work; when a cap is hit
+ * the result says so, and the coverage report repeats it.
+ */
+export function scanGitHistory(
+  root: string,
+  options: { isTest?: (p: string) => boolean; known?: Set<string>; maxBlobs?: number; timeBudgetMs?: number } = {},
+): SecretHistoryScan | undefined {
+  const started = Date.now();
+  const isTest = options.isTest ?? isTestOrFixturePath;
+  const known = options.known ?? new Set<string>();
+  const maxBlobs = options.maxBlobs ?? HISTORY_MAX_BLOBS;
+  const budget = options.timeBudgetMs ?? HISTORY_TIME_BUDGET_MS;
+
+  if (!git(root, ['rev-parse', '--is-inside-work-tree']).ok) return undefined;
+  const listed = git(root, ['rev-list', '--all', '--objects'], 60_000);
+  if (!listed.ok) return undefined;
+
+  const current = new Set<string>();
+  for (const line of git(root, ['ls-files', '-s'], 30_000).stdout.split('\n')) {
+    const m = /^\d+ ([0-9a-f]{40}) \d+\t/.exec(line);
+    if (m) current.add(m[1]!);
+  }
+
+  const pathOf = new Map<string, string>();
+  for (const line of listed.stdout.split('\n')) {
+    const m = /^([0-9a-f]{40}) (.+)$/.exec(line);
+    if (!m) continue;
+    const [, sha, path] = m as unknown as [string, string, string];
+    if (pathOf.has(sha) || current.has(sha)) continue;
+    if (LOCKFILE.test(path)) continue;
+    const name = path.split('/').pop() ?? '';
+    const ext = extname(name).toLowerCase() || (name.startsWith('.env') ? '.env' : '');
+    if (!MIN_SCAN_EXT.has(ext)) continue;
+    pathOf.set(sha, path);
+  }
+
+  let skipped = 0;
+  let capped = false;
+  const sized: Array<{ sha: string; size: number }> = [];
+  if (pathOf.size > 0) {
+    const check = runBytes('git', ['-C', root, 'cat-file', '--batch-check'], { input: `${Array.from(pathOf.keys()).join('\n')}\n`, timeoutMs: 60_000 });
+    for (const line of check.stdout.toString('utf8').split('\n')) {
+      const m = OBJECT_LINE.exec(line);
+      if (!m || m[2] !== 'blob') continue;
+      const size = Number(m[3]);
+      if (size > HISTORY_MAX_BLOB_BYTES) {
+        skipped += 1;
+        continue;
+      }
+      sized.push({ sha: m[1]!, size });
+    }
+  }
+  if (sized.length > maxBlobs) {
+    skipped += sized.length - maxBlobs;
+    sized.length = maxBlobs;
+    capped = true;
+  }
+
+  const hits: Array<SecretCandidate & { fullBlob: string }> = [];
+  let examined = 0;
+  let i = 0;
+  while (i < sized.length) {
+    if (Date.now() - started > budget) {
+      skipped += sized.length - i;
+      capped = true;
+      break;
+    }
+    const chunk: string[] = [];
+    let bytes = 0;
+    while (i < sized.length && (chunk.length === 0 || bytes + sized[i]!.size <= HISTORY_CHUNK_BYTES)) {
+      bytes += sized[i]!.size;
+      chunk.push(sized[i]!.sha);
+      i += 1;
+    }
+    const buf = runBytes('git', ['-C', root, 'cat-file', '--batch'], { input: `${chunk.join('\n')}\n`, timeoutMs: 60_000 }).stdout;
+    let pos = 0;
+    while (pos < buf.length) {
+      const nl = buf.indexOf(0x0a, pos);
+      if (nl < 0) break;
+      const header = OBJECT_LINE.exec(buf.subarray(pos, nl).toString('utf8'));
+      pos = nl + 1;
+      if (!header) continue; // "<sha> missing" carries no body
+      const size = Number(header[3]);
+      const body = buf.subarray(pos, pos + size);
+      pos += size + 1;
+      if (header[2] !== 'blob') continue;
+      const sha = header[1]!;
+      examined += 1;
+      const found: SecretCandidate[] = [];
+      scanText(pathOf.get(sha) ?? sha, body.toString('utf8'), found, { isTest, rules: PRECISE_RULES, skipFingerprints: known, collectFingerprints: known });
+      for (const c of found) hits.push({ ...c, blob: sha.slice(0, 12), fullBlob: sha });
+    }
+  }
+
+  // The commit that introduced each cited blob, for the first few hits only:
+  // one git log per hit is cheap at this scale and pointless beyond it.
+  for (const h of hits.slice(0, 12)) {
+    const log = git(root, ['log', '--all', '--reverse', '--format=%h', `--find-object=${h.fullBlob}`], 10_000);
+    const first = log.stdout.split('\n').find((l) => l.trim().length > 0);
+    if (first) h.commit = first.trim();
+  }
+
+  const live = hits.filter((h) => !h.likelyFalsePositive).length;
+  return {
+    blobsExamined: examined,
+    blobsSkipped: skipped,
+    capped,
+    hits: hits.map(({ fullBlob: _omit, ...c }) => c),
+    note: `${examined} historical blob(s) checked with ${PRECISE_RULES.length} precise patterns in ${Date.now() - started}ms; ${hits.length} match(es), ${live} surviving triage${capped ? `; capped, ${skipped} skipped` : skipped > 0 ? `; ${skipped} oversized skipped` : ''}`,
+  };
 }
 
 /**
@@ -456,10 +651,23 @@ export function triageCandidate(input: TriageInput): { suppress: boolean; reason
       reason: `the line carries an explicit scanner allow annotation (${ALLOW_ANNOTATION.exec(lineText)![0]}). Honoured because it is committed and reviewable — published here rather than applied silently, so you can disagree with the author`,
     };
   }
+  // A provider marker inside a regular-expression literal is the pattern that
+  // detects that provider, not a credential. Every secret scanner's own source
+  // is full of these, and so is any project that validates key formats; a
+  // relayed gitleaks hit on Sentinel's PEM-header pattern was the lead item of
+  // a High finding.
+  if (rule.precise && JS_FAMILY.test(path) && insideRegexLiteral(lineText, value)) {
+    return {
+      suppress: true,
+      reason: 'the match is inside a regular-expression literal — a pattern that detects this kind of credential, not a credential',
+    };
+  }
   // A PEM header handled as a token is delimiter code, not a key. An OAuth
   // service that strips the armour before base64-decoding a key it was *given*
   // was the lead item in a High "33 credential-shaped values" finding.
-  if (rule.id === 'private-key-block' && PEM_HEADER_TOKEN.test(lineText)) {
+  // Keyed on the value rather than the rule id, so a hit relayed from another
+  // scanner (`gitleaks:private-key`) gets the same reading.
+  if (/^-----BEGIN /.test(value) && PEM_HEADER_TOKEN.test(lineText)) {
     return {
       suppress: true,
       reason: 'the PEM header is a bare string token closed by its quote and followed by a delimiter (Replace/split/startsWith-style handling); no key material follows it. A header that opens a key block is still reported',
@@ -579,7 +787,7 @@ function probeExternalScanner(
       timeoutMs: 180_000,
     });
     const findings = countJsonArray(res.stdout);
-    const parsed = parseGitleaks(res.stdout, options);
+    const parsed = parseGitleaks(res.stdout, { ...options, root });
     return {
       name: 'gitleaks',
       available: true,
@@ -699,7 +907,21 @@ interface GitleaksReport {
 }
 
 /** gitleaks `--report-format json`: one JSON array of results. */
-export function parseGitleaks(stdout: string, options: { isTest?: (p: string) => boolean } = {}): ParsedExternalHits {
+/**
+ * The line a relayed hit sits on, read from the working tree (or from the
+ * commit gitleaks named), so triage sees the same context it would for
+ * Sentinel's own match: a header used as a string token, a marker inside a
+ * regex literal, an allow annotation. gitleaks' `Match` is only the fragment.
+ */
+function relayedLineText(root: string | undefined, file: string, line: number, commit: string | undefined): string | undefined {
+  if (!root || line < 1) return undefined;
+  const text = commit ? git(root, ['show', `${commit}:${file}`], 10_000) : undefined;
+  const content = text ? (text.ok ? text.stdout : null) : readTextSafe(join(root, file), 2_000_000);
+  if (content === null || content === undefined) return undefined;
+  return content.split('\n')[line - 1];
+}
+
+export function parseGitleaks(stdout: string, options: { isTest?: (p: string) => boolean; root?: string } = {}): ParsedExternalHits {
   const start = stdout.indexOf('[');
   if (start < 0) return { ok: stdout.trim() === '' || stdout.trim() === '[]', hits: [] };
   let report: unknown;
@@ -720,7 +942,7 @@ export function parseGitleaks(stdout: string, options: { isTest?: (p: string) =>
           ruleId: `gitleaks:${raw.RuleID ?? 'unknown'}`,
           description: raw.Description ?? raw.RuleID ?? 'gitleaks finding',
           value,
-          lineText: raw.Match ?? value,
+          lineText: relayedLineText(options.root, file, raw.StartLine ?? 1, raw.Commit) ?? raw.Match ?? value,
           path: file,
           line: raw.StartLine ?? 1,
           commit: raw.Commit,

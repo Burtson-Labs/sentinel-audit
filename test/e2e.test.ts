@@ -51,12 +51,17 @@ beforeAll(async () => {
   write('index.html', '<!doctype html>\n<html><head><title>fixture</title></head><body><div id="root"></div></body></html>\n');
 
   // --- a renderer that genuinely escapes: expect a REFUTED finding -----------
+  // The escape table lives in a sibling imported as `./escapes.js` while the
+  // file on disk is `escapes.ts` — the TypeScript ESM convention. The proof
+  // can only reach safeRender through the harness's resolve hook.
+  write(
+    'src/escapes.ts',
+    ['export const ESCAPES: Record<string, string> = {', `  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',`, '};', ''].join('\n'),
+  );
   write(
     'src/safeRender.ts',
     [
-      'const ESCAPES: Record<string, string> = {',
-      `  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',`,
-      '};',
+      "import { ESCAPES } from './escapes.js';",
       '',
       'export function safeRender(input: string): string {',
       "  const escaped = input.replace(/[&<>\"']/g, (c) => ESCAPES[c] ?? c);",
