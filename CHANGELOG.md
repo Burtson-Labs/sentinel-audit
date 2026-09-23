@@ -42,6 +42,11 @@ All notable changes to this project are documented here. Format loosely follows
   private-network addresses, runs no model pass unless `--provider` says where,
   and refuses Ollama cloud models (`:cloud`, `remote_host`), which Ollama
   forwards to ollama.com.
+- **GitHub Action.** `action.yml` at the root (`uses: Burtson-Labs/sentinel-audit@v0`)
+  runs the npm release matching the action ref, uploads SARIF, writes the job
+  summary, and fails on `findings`, `gate` or `never`. Inputs reach the shell
+  through `env`, never `${{ }}` interpolation. Sentinel's own CI self-scan now
+  runs through it.
 - README no longer says Sentinel is "not on a public registry yet" directly under
   the `npm i -g` quickstart.
 

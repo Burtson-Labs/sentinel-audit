@@ -1,0 +1,133 @@
+name: Sentinel Audit
+description: Repository security audit with executed proofs, an honesty ladder for every finding, and SARIF for code scanning.
+author: Burtson Labs
+branding:
+  icon: shield
+  color: purple
+
+# Usage:
+#
+#   permissions:
+#     contents: read
+#     security-events: write
+#   steps:
+#     - uses: actions/checkout@v4
+#       with: { fetch-depth: 0 }   # full history, so secret scanning sees it
+#     - uses: Burtson-Labs/sentinel-audit@v0
+#
+# The CLI version comes from this action's own package.json, so pinning the
+# action to a tag or SHA pins the scanner too. Proofs run in a Docker container
+# with no network (GitHub-hosted Linux runners have Docker); the model pass is
+# off unless `args` turns it on.
+
+inputs:
+  path:
+    description: Repository to scan, relative to the workspace.
+    default: '.'
+  profile:
+    description: Standards profile (owasp-asvs, cwe-top-25, generic-enterprise) or a path to a profile JSON.
+    default: owasp-asvs
+  out:
+    description: Output directory for the artefacts.
+    default: sentinel-results
+  format:
+    description: Comma-separated artefact formats.
+    default: md,html,json,sarif
+  args:
+    description: 'Extra CLI arguments, for example "--provider anthropic" to enable the model pass. The default keeps CI deterministic.'
+    default: --no-llm
+  fail-on:
+    description: "findings: fail when findings reach the profile's conditional threshold or the gate blocks (exit 1 or 2). gate: fail only when the gate blocks (exit 2). never: report only."
+    default: findings
+  upload-sarif:
+    description: 'Upload report.sarif to GitHub code scanning. Needs `security-events: write`; private repositories also need GitHub Advanced Security.'
+    default: 'true'
+  sarif-category:
+    description: Code scanning category, so several Sentinel runs in one repository do not overwrite each other.
+    default: sentinel-audit
+  node-version:
+    description: Node version for the scanner (22.6 or newer).
+    default: '22'
+  cli:
+    description: Path to a built dist/cli.js to run instead of the published package. For testing the action against a checkout.
+    default: ''
+
+outputs:
+  exit-code:
+    description: The scanner's exit code (0 clean, 1 findings at or above the threshold, 2 gate blocked).
+    value: ${{ steps.scan.outputs.exit-code }}
+  sarif:
+    description: Path to the SARIF report.
+    value: ${{ steps.scan.outputs.sarif }}
+  report:
+    description: Path to REPORT.md.
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Run Sentinel
+      id: scan
+      shell: bash
+      # Inputs reach the script through env, never ${{ }} interpolation, so a
+      # crafted input cannot become shell syntax.
+      env:
+        SENTINEL_PATH: ${{ inputs.path }}
+        SENTINEL_PROFILE: ${{ inputs.profile }}
+        SENTINEL_OUT: ${{ inputs.out }}
+        SENTINEL_FORMAT: ${{ inputs.format }}
+        SENTINEL_ARGS: ${{ inputs.args }}
+        SENTINEL_CLI: ${{ inputs.cli }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        if [ -n "$SENTINEL_CLI" ]; then
+          sentinel=(node "$SENTINEL_CLI")
+        else
+          version=$(node -p "require(process.env.ACTION_PATH + '/package.json').version")
+          sentinel=(npx --yes "@burtson-labs/sentinel-audit@${version}")
+        fi
+        read -r -a extra <<< "$SENTINEL_ARGS"
+        set +e
+        "${sentinel[@]}" scan "$SENTINEL_PATH" \
+          --profile "$SENTINEL_PROFILE" --out "$SENTINEL_OUT" --format "$SENTINEL_FORMAT" "${extra[@]}"
+        code=$?
+        set -e
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        echo "sarif=$SENTINEL_OUT/report.sarif" >> "$GITHUB_OUTPUT"
+        echo "report=$SENTINEL_OUT/REPORT.md" >> "$GITHUB_OUTPUT"
+        if [ -f "$SENTINEL_OUT/findings/index.json" ]; then
+          node -e "
+            const d = require(require('path').resolve(process.env.SENTINEL_OUT, 'findings/index.json'));
+            const rows = Object.entries(d.counts ?? {}).map(([k, v]) => '| ' + k + ' | ' + v + ' |');
+            console.log(['## Sentinel audit', '', '| status | count |', '|---|---:|', ...rows].join('\n'));
+          " >> "$GITHUB_STEP_SUMMARY" || true
+        fi
+
+    - name: Upload SARIF to code scanning
+      # A convenience, not the gate: a repository that cannot accept code
+      # scanning uploads must not hide the result enforced below.
+      if: always() && inputs.upload-sarif == 'true' && hashFiles(format('{0}/report.sarif', inputs.out)) != ''
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.38.0
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif }}
+        category: ${{ inputs.sarif-category }}
+
+    - name: Enforce
+      if: always()
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.exit-code }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        case "$FAIL_ON" in
+          never) exit 0 ;;
+          gate) [ "$CODE" != "2" ] || { echo "::error::Sentinel: the profile gate blocked (exit 2)"; exit 1; } ;;
+          findings) [ "$CODE" = "0" ] || { echo "::error::Sentinel exited $CODE (1 = findings at or above the threshold, 2 = gate blocked)"; exit 1; } ;;
+          *) echo "::error::fail-on must be findings, gate or never (got '$FAIL_ON')"; exit 1 ;;
+        esac

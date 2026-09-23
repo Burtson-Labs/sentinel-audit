@@ -382,6 +382,29 @@ one changes data already written.
 
 ### CI
 
+As a GitHub Action:
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+steps:
+  - uses: actions/checkout@v4
+    with:
+      fetch-depth: 0          # full history, so secret scanning sees it
+  - uses: Burtson-Labs/sentinel-audit@v0
+    with:
+      profile: owasp-asvs     # or cwe-top-25, generic-enterprise, ./profile.json
+      fail-on: findings       # findings | gate | never
+```
+
+The action runs the npm release whose version matches the action ref, uploads
+SARIF to code scanning, writes the counts to the job summary, and exposes
+`exit-code`, `sarif` and `report` outputs. The model pass is off (`args: --no-llm`)
+unless you pass provider arguments. Sentinel's own CI runs through this action.
+
+Or write the equivalent workflow file into your repository:
+
 ```bash
 sentinel init-workflow   # writes .github/workflows/sentinel.yml
 ```

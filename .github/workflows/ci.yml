@@ -71,26 +71,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
-      - name: Self-scan
-        id: scan
-        continue-on-error: true
-        run: |
-          node dist/cli.js scan . \
-            --profile owasp-asvs \
-            --out .sentinel \
-            --format md,html,json,sarif \
-            --no-llm
-
-      - name: Upload SARIF
-        # A convenience, not the gate: a private repository without Advanced
-        # Security cannot accept code-scanning uploads, and that must not mask
-        # the scan result asserted below.
-        if: always() && hashFiles('.sentinel/report.sarif') != ''
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.38.0
+      - name: Self-scan through the action
+        # Runs action.yml against this checkout's build, so the Marketplace
+        # action is exercised on every push, not just when someone adopts it.
+        uses: ./
         with:
-          sarif_file: .sentinel/report.sarif
-          category: sentinel-selfscan
+          out: .sentinel
+          cli: dist/cli.js
+          fail-on: findings
+          sarif-category: sentinel-selfscan
 
       - name: Upload artefacts
         if: always()
@@ -100,23 +89,9 @@ jobs:
           path: .sentinel/
           retention-days: 14
 
-      - name: Summary
-        if: always()
-        run: |
-          if [ -f .sentinel/findings/index.json ]; then
-            node -e "
-              const d = require('./.sentinel/findings/index.json');
-              const out = ['## Sentinel self-scan', '', '| status | count |', '|---|---:|'];
-              for (const [k, v] of Object.entries(d.counts)) out.push('| ' + k + ' | ' + v + ' |');
-              console.log(out.join('\n'));
-            " >> "$GITHUB_STEP_SUMMARY"
-          fi
-
       - name: Schema validation must be clean
+        if: always()
         run: |
           # Sentinel validating its own output is the cheapest regression test for
           # the semantic invariants; a violation here is a bug in Sentinel.
           test ! -f .sentinel/SCHEMA-VALIDATION.md || { cat .sentinel/SCHEMA-VALIDATION.md; exit 1; }
-
-      - name: Enforce the gate
-        run: test "${{ steps.scan.outcome }}" = "success"
