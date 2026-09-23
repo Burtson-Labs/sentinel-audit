@@ -13,7 +13,14 @@ import { run, commandExists } from '../util/exec.js';
  * the same.
  */
 
-export type ProviderKind = 'bandit-cli' | 'anthropic' | 'openai' | 'none';
+export type ProviderKind = 'bandit-cli' | 'anthropic' | 'openai' | 'ollama' | 'none';
+
+/** What `--provider` accepts. `auto` keeps the detection order below. */
+export type ProviderChoice = 'auto' | 'bandit' | 'anthropic' | 'openai' | 'ollama';
+export const PROVIDER_CHOICES: readonly ProviderChoice[] = ['auto', 'bandit', 'anthropic', 'openai', 'ollama'];
+export function isProviderChoice(v: string): v is ProviderChoice {
+  return (PROVIDER_CHOICES as readonly string[]).includes(v);
+}
 
 /**
  * `mode` is load-bearing, not cosmetic.
@@ -57,6 +64,42 @@ export interface ProviderOptions {
   disabled?: boolean;
   model?: string;
   timeoutMs?: number;
+  /** Which provider to use; `auto` (default) detects. */
+  provider?: ProviderChoice;
+  /**
+   * `--offline`: prompts carry the audited source, so the model pass may only
+   * reach a loopback or private-network endpoint. Hosted APIs are refused, and
+   * `auto` picks nothing, because Sentinel cannot see where the Bandit CLI
+   * sends a prompt.
+   */
+  offline?: boolean;
+}
+
+/**
+ * Loopback, RFC 1918, unique-local IPv6 and `*.localhost`/`*.local` names:
+ * endpoints on the operator's own machine or network.
+ */
+export function isLocalEndpoint(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host === 'host.docker.internal') return true;
+  if (host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host)) return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+/** `OLLAMA_HOST` is often a bare `host:port`; Ollama itself accepts that. */
+export function ollamaBaseUrl(env: string | undefined = process.env.OLLAMA_HOST): string {
+  const raw = (env ?? '').trim() || 'http://127.0.0.1:11434';
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+  return withScheme.replace(/\/$/, '');
 }
 
 /**
@@ -80,6 +123,45 @@ const BANDIT_CLI_CANDIDATES = (): string[] => {
 export function detectProvider(options: ProviderOptions = {}): LlmProvider {
   if (options.disabled) {
     return nullProvider('the model pass was disabled for this run (--no-llm)');
+  }
+  const choice = options.provider ?? 'auto';
+
+  if (options.offline) {
+    if (choice === 'anthropic') {
+      return nullProvider('--offline keeps the audited source on this network, so the hosted Anthropic API was not called. Use --provider ollama for an offline model pass.');
+    }
+    if (choice === 'auto') {
+      return nullProvider('--offline with no --provider: the model pass ran nowhere rather than guess where a prompt would go. Pass --provider ollama (or openai with a local OPENAI_BASE_URL) for an offline model pass.');
+    }
+    if (choice === 'openai') {
+      const base = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
+      if (!isLocalEndpoint(base)) {
+        return nullProvider(`--offline refuses the OpenAI-compatible endpoint ${base}: it is not on loopback or a private network. Point OPENAI_BASE_URL at a local server, or use --provider ollama.`);
+      }
+    }
+    if (choice === 'ollama' && !isLocalEndpoint(ollamaBaseUrl())) {
+      return nullProvider(`--offline refuses OLLAMA_HOST ${ollamaBaseUrl()}: it is not on loopback or a private network.`);
+    }
+  }
+
+  switch (choice) {
+    case 'ollama':
+      return ollamaProvider(options);
+    case 'anthropic':
+      return process.env.ANTHROPIC_API_KEY ? anthropicProvider(options) : nullProvider('--provider anthropic needs ANTHROPIC_API_KEY.');
+    case 'openai':
+      return process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL
+        ? openAiProvider(options)
+        : nullProvider('--provider openai needs OPENAI_API_KEY, or OPENAI_BASE_URL for a keyless local server.');
+    case 'bandit': {
+      const candidates = options.banditCli ? [options.banditCli, ...BANDIT_CLI_CANDIDATES()] : BANDIT_CLI_CANDIDATES();
+      const found = candidates.find((p) => p && existsSync(p));
+      if (found) return banditCliProvider(found, options);
+      if (commandExists('bandit')) return banditBinaryProvider(options);
+      return nullProvider('--provider bandit: no Bandit CLI was found (--bandit-cli, SENTINEL_BANDIT_CLI, ~/.bandit/bin/cli.js, or `bandit` on PATH).');
+    }
+    case 'auto':
+      break;
   }
 
   // 1. Bandit CLI — preferred, because it runs against whatever provider the
@@ -227,6 +309,75 @@ function openAiProvider(options: ProviderOptions): LlmProvider {
       }
     },
   };
+}
+
+/**
+ * Ollama's native chat API. With no `--model`, the first installed *local*
+ * model is used and named in the report, so a bare `--provider ollama` works on
+ * a machine that has pulled anything at all.
+ *
+ * Ollama also lists cloud models (`kimi-k3:cloud`, carrying `remote_host`) that
+ * it proxies to ollama.com. Those are never picked by default, and `--offline`
+ * refuses one even when named: the prompt carries the audited source.
+ */
+export function isRemoteOllamaModel(m: { name?: string; remote_host?: string }): boolean {
+  return Boolean(m.remote_host) || /[:-]cloud$/i.test(m.name ?? '');
+}
+
+function ollamaProvider(options: ProviderOptions): LlmProvider {
+  const base = ollamaBaseUrl();
+  let model = options.model ?? process.env.SENTINEL_MODEL ?? process.env.OLLAMA_MODEL ?? '';
+  let checked = false;
+  const where = isLocalEndpoint(base) ? 'this machine or network' : base;
+  const provider: LlmProvider = {
+    kind: 'ollama',
+    label: `ollama (${model || 'first local model'} @ ${base})`,
+    available: true,
+    note: `model pass used Ollama at ${base}${model ? ` with model ${model}` : ''}`,
+    async complete(prompt, opts) {
+      const started = Date.now();
+      const timeoutMs = opts?.timeoutMs ?? options.timeoutMs ?? 300_000;
+      const fail = (error: string): LlmResponse => ({ ok: false, text: '', error, durationMs: Date.now() - started });
+      try {
+        if (!checked) {
+          const tags = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(10_000) });
+          const installed = ((await tags.json()) as { models?: Array<{ name?: string; remote_host?: string }> }).models ?? [];
+          if (!model) {
+            model = installed.find((m) => m.name && !isRemoteOllamaModel(m))?.name ?? '';
+            if (!model) return fail(`ollama at ${base} has no local models installed (ollama pull <model>); cloud models are not picked by default`);
+          }
+          const entry = installed.find((m) => m.name === model || m.name === `${model}:latest`);
+          const remote = isRemoteOllamaModel(entry ?? { name: model });
+          if (remote && options.offline) {
+            return fail(`--offline refuses ${model}: Ollama proxies it to ${entry?.remote_host ?? 'ollama.com'}, so the audited source would leave this network`);
+          }
+          checked = true;
+          provider.label = `ollama (${model} @ ${base})`;
+          provider.note = remote
+            ? `model pass used Ollama cloud model ${model} via ${base}; prompts went to ${entry?.remote_host ?? 'ollama.com'}`
+            : `model pass used Ollama at ${base} with local model ${model}${options.model ? '' : ' (the first installed; pass --model to choose)'}; no prompt left ${where}`;
+        }
+        const res = await fetch(`${base}/api/chat`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            stream: false,
+            messages: [{ role: 'user', content: prompt }],
+            options: { num_predict: opts?.maxTokens ?? 4096 },
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!res.ok) return fail(`ollama ${res.status}: ${(await res.text()).slice(0, 300)}`);
+        const doc = (await res.json()) as { message?: { content?: string } };
+        const text = doc.message?.content ?? '';
+        return { ok: text.length > 0, text, durationMs: Date.now() - started };
+      } catch (err) {
+        return fail(err instanceof Error ? err.message : String(err));
+      }
+    },
+  };
+  return provider;
 }
 
 /**

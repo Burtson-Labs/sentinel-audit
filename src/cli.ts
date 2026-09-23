@@ -7,6 +7,7 @@ import { fix } from './fix/index.js';
 import { listProfiles, loadProfile } from './profile.js';
 import { ALL_RULES } from './rules/index.js';
 import { isProofSandboxMode, PROOF_SANDBOX_MODES } from './verify/sandbox.js';
+import { isProviderChoice, PROVIDER_CHOICES } from './llm/client.js';
 import { exists, writeFileEnsured } from './util/fsx.js';
 
 /**
@@ -37,7 +38,12 @@ SCAN OPTIONS
                           capabilities and an empty environment, and skip proofs when no
                           runtime answers. host runs them as you, env scrubbed; opt-in only.
   --proof-image <image>   container image for proofs, Node 22.18+ (default: node:24-alpine)
-  --offline               skip anything needing network access (dependency advisories)
+  --offline               skip anything needing network access (dependency advisories) and keep
+                          the model pass on this machine or network: hosted APIs are refused,
+                          and without --provider there is no model pass
+  --provider <name>       model for the review pass: auto | bandit | anthropic | openai | ollama
+                          (default: auto). ollama uses OLLAMA_HOST (default 127.0.0.1:11434)
+  --model <id>            model id for --provider (ollama default: first installed model)
   --no-external-scanners  do not run gitleaks/trufflehog even if installed; Sentinel scans git history itself
   --bandit-cli <path>     path to the Bandit CLI entrypoint used as the coding/review agent
   --max-review-files <n>  how many files the model review pass may read (default: 4)
@@ -154,6 +160,11 @@ async function runScan(args: Args): Promise<number> {
     return 64;
   }
 
+  const provider = String(args.flags.get('provider') ?? 'auto');
+  if (!isProviderChoice(provider)) {
+    process.stderr.write(`invalid --provider "${provider}" (expected ${PROVIDER_CHOICES.join(', ')})\n`);
+    return 64;
+  }
   const proofSandbox = String(args.flags.get('proof-sandbox') ?? 'auto');
   if (!isProofSandboxMode(proofSandbox)) {
     process.stderr.write(`invalid --proof-sandbox "${proofSandbox}" (expected ${PROOF_SANDBOX_MODES.join(', ')})\n`);
@@ -169,6 +180,8 @@ async function runScan(args: Args): Promise<number> {
     noLlm: Boolean(args.flags.get('no-llm')),
     noProofs: Boolean(args.flags.get('no-proofs')),
     proofSandbox,
+    provider,
+    model: args.flags.has('model') ? String(args.flags.get('model')) : undefined,
     proofImage: args.flags.has('proof-image') ? String(args.flags.get('proof-image')) : undefined,
     offline: Boolean(args.flags.get('offline')),
     noExternalScanners: Boolean(args.flags.get('no-external-scanners')),

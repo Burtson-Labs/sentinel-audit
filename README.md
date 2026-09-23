@@ -190,7 +190,10 @@ sentinel init-workflow           # write .github/workflows/sentinel.yml
 --no-proofs             skip generating and executing proof scripts
 --proof-sandbox <mode>  auto | container | host | off (default auto: container, or skip)
 --proof-image <image>   container image for proofs, Node 22.18+ (default node:24-alpine)
---offline               skip anything needing the network (dependency advisories)
+--offline               no network: skip dependency advisories, and keep the model pass on
+                        this machine or network (hosted APIs refused; needs --provider)
+--provider <name>       auto | bandit | anthropic | openai | ollama (default auto)
+--model <id>            model for --provider (ollama default: first local model)
 --bandit-cli <path>     path to the coding/review agent entrypoint
 --max-review-files <n>  how many files the model review pass may read (default 4)
 --llm-timeout <ms>      per-call budget for the model pass (default 300000)
@@ -306,7 +309,7 @@ because the naive version of each of these rules is unusable:
 
 Uses the [Bandit CLI](https://github.com/Burtson-Labs/bandit-agent-framework) if it
 is installed, otherwise `ANTHROPIC_API_KEY` or any `OPENAI_API_KEY`-compatible
-endpoint. Three jobs only:
+endpoint. `--provider` picks one explicitly. Three jobs only:
 
 1. **Triage** — may dismiss or downgrade a deterministic finding, but only by
    citing a `file:line` that justifies it. Uncited dismissals are rejected by the
@@ -320,6 +323,22 @@ endpoint. Three jobs only:
 With no provider reachable, the scan completes and every artefact says the model
 pass did not run, with the coverage cost spelled out. The one failure mode a
 security report must not have is quietly producing less while looking the same.
+
+**Offline, with a local model.** Prompts carry the audited source, so an offline
+audit has to keep the model pass local too:
+
+```bash
+sentinel scan ../some-repo --offline --provider ollama --model gemma4:e4b
+```
+
+With `--offline`, hosted APIs are refused, an OpenAI-compatible or Ollama endpoint
+must be on loopback or a private network, and with no `--provider` the model pass
+does not run. Ollama's cloud models (`kimi-k3:cloud` and others that carry a
+`remote_host`) are never picked by default and are refused under `--offline` even
+when named, because Ollama forwards them to ollama.com. `OLLAMA_HOST` is honoured;
+with no `--model`, the first installed local model is used and the report names it.
+Proofs already run with no network (see above), so together with `--offline` a
+scan needs no network at all once the proof image has been pulled.
 
 **Wall-clock note:** the deterministic half of a scan takes seconds; the model pass
 takes minutes per call and dominates the total. Budget it with `--llm-timeout` and

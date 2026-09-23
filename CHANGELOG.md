@@ -32,6 +32,16 @@ All notable changes to this project are documented here. Format loosely follows
   key, reach `1.1.1.1`, write into the repository and to `/`, and execute from
   `/tmp`; any success fails the build. It runs wherever a container runtime is
   available, which includes CI.
+- **`--provider ollama` and a real offline mode.** Local models only worked
+  indirectly, through `OPENAI_BASE_URL`. `--provider auto|bandit|anthropic|openai|ollama`
+  and `--model` now choose explicitly; the Ollama provider uses the native chat
+  API and `OLLAMA_HOST`, and with no `--model` takes the first installed local
+  model and names it in the report. `--offline` previously skipped only
+  dependency advisories, and a set `ANTHROPIC_API_KEY` still sent the audited
+  source to a hosted API. It now refuses hosted endpoints, requires loopback or
+  private-network addresses, runs no model pass unless `--provider` says where,
+  and refuses Ollama cloud models (`:cloud`, `remote_host`), which Ollama
+  forwards to ollama.com.
 - README no longer says Sentinel is "not on a public registry yet" directly under
   the `npm i -g` quickstart.
 

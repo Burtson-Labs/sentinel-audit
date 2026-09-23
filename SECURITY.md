@@ -40,6 +40,7 @@ The container isolates a proof, not the rest of the scan. The package-manager au
 ### What Sentinel never does
 
 - **Never prints a secret.** Secret findings carry a masked value (3 leading characters, the length) and never the material. This is enforced at the collector, so it holds in every output format including SARIF and JSON.
+- **Never sends your source anywhere under `--offline`.** The model pass is the only part of a scan that transmits source code. With `--offline` it goes only to a loopback or private-network endpoint (`--provider ollama`, or `openai` with a local `OPENAI_BASE_URL`), and Ollama cloud models are refused.
 - **Never phones home.** No telemetry, no analytics, no update check. The HTML report makes no network requests of any kind — no CDN, no font, no remote image — and a test asserts it.
 - **Never interpolates repository content into a shell.** Every subprocess goes through one helper with `shell: false` and an argv array.
 - **Never commits to your default branch.**

@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { extractJson, detectProvider } from '../src/llm/client.js';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import { extractJson, detectProvider, isLocalEndpoint, ollamaBaseUrl } from '../src/llm/client.js';
 import { applyLlmResults, type LlmPassResult } from '../src/llm/passes.js';
 import type { Finding } from '../src/types.js';
 
@@ -199,5 +200,125 @@ describe('providerFailureReason', () => {
   it('treats an exhausted retry chain as unavailability', async () => {
     const { providerFailureReason } = await import('../src/llm/client.js');
     expect(providerFailureReason('warming up the model — retry 3 of 3 in 2s', undefined)).toBeTruthy();
+  });
+});
+
+describe('offline model pass: the audited source stays on this network', () => {
+  const withEnv = (env: Record<string, string | undefined>, fn: () => void): void => {
+    const saved = { ...process.env };
+    try {
+      for (const [k, v] of Object.entries(env)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      fn();
+    } finally {
+      process.env = saved;
+    }
+  };
+
+  it('classifies loopback and private-network endpoints as local, everything else as not', () => {
+    for (const u of ['http://localhost:11434', 'http://127.0.0.1:1234/v1', 'http://[::1]:11434', 'http://10.0.0.5', 'http://172.20.1.1', 'http://192.168.1.51:11434', 'http://gpu.local', 'http://[fd12::1]/'])
+      expect(isLocalEndpoint(u), u).toBe(true);
+    for (const u of ['https://api.openai.com/v1', 'https://api.anthropic.com', 'http://172.32.0.1', 'http://8.8.8.8', 'http://localhost.evil.com', 'not a url'])
+      expect(isLocalEndpoint(u), u).toBe(false);
+  });
+
+  it('accepts OLLAMA_HOST as a bare host:port', () => {
+    expect(ollamaBaseUrl(undefined)).toBe('http://127.0.0.1:11434');
+    expect(ollamaBaseUrl('0.0.0.0:11434')).toBe('http://0.0.0.0:11434');
+    expect(ollamaBaseUrl('https://gpu.example/')).toBe('https://gpu.example');
+  });
+
+  it('refuses hosted APIs and never auto-detects when offline', () => {
+    withEnv({ ANTHROPIC_API_KEY: 'k', OPENAI_API_KEY: 'k', OPENAI_BASE_URL: undefined, SENTINEL_BANDIT_CLI: undefined }, () => {
+      expect(detectProvider({ offline: true }).available).toBe(false);
+      expect(detectProvider({ offline: true, provider: 'anthropic' }).available).toBe(false);
+      expect(detectProvider({ offline: true, provider: 'openai' }).available).toBe(false);
+    });
+    withEnv({ OPENAI_BASE_URL: 'http://127.0.0.1:1234/v1', OPENAI_API_KEY: undefined }, () => {
+      expect(detectProvider({ offline: true, provider: 'openai' }).available).toBe(true);
+    });
+    withEnv({ OLLAMA_HOST: 'https://ollama.example.com' }, () => {
+      expect(detectProvider({ offline: true, provider: 'ollama' }).available).toBe(false);
+    });
+    withEnv({ OLLAMA_HOST: undefined }, () => {
+      expect(detectProvider({ offline: true, provider: 'ollama' }).kind).toBe('ollama');
+    });
+  });
+});
+
+describe('ollama provider', () => {
+  let server: Server;
+  let base = '';
+  const bodies: unknown[] = [];
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      let data = '';
+      req.on('data', (c) => (data += c));
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'kimi-k3:cloud', remote_host: 'https://ollama.com' }, { name: 'qwen3-coder:30b' }, { name: 'gemma4:e4b' }] }));
+        if (req.url === '/api/chat') {
+          bodies.push(JSON.parse(data));
+          return res.end(JSON.stringify({ message: { role: 'assistant', content: '[{"ok":true}]' } }));
+        }
+        res.statusCode = 404;
+        res.end('{}');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const addr = server.address();
+    base = `127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  });
+
+  afterAll(() => {
+    server.close();
+  });
+
+  it('uses the first installed model when none is named, and says so', async () => {
+    const saved = process.env.OLLAMA_HOST;
+    process.env.OLLAMA_HOST = base;
+    try {
+      const p = detectProvider({ provider: 'ollama', offline: true });
+      const r = await p.complete('hello', { maxTokens: 64 });
+      expect(r.ok).toBe(true);
+      expect(r.text).toBe('[{"ok":true}]');
+      expect(bodies.at(-1)).toMatchObject({ model: 'qwen3-coder:30b', stream: false, options: { num_predict: 64 } });
+      expect(p.label).toContain('qwen3-coder:30b');
+      expect(p.note).toMatch(/first installed/);
+      expect(bodies.some((b) => (b as { model: string }).model.endsWith(':cloud'))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.OLLAMA_HOST;
+      else process.env.OLLAMA_HOST = saved;
+    }
+  });
+
+  it('refuses a named cloud model offline, before any prompt is sent', async () => {
+    const saved = process.env.OLLAMA_HOST;
+    process.env.OLLAMA_HOST = base;
+    try {
+      const sent = bodies.length;
+      const r = await detectProvider({ provider: 'ollama', model: 'kimi-k3:cloud', offline: true }).complete('secret source');
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/--offline refuses kimi-k3:cloud/);
+      expect(bodies.length).toBe(sent);
+    } finally {
+      if (saved === undefined) delete process.env.OLLAMA_HOST;
+      else process.env.OLLAMA_HOST = saved;
+    }
+  });
+
+  it('uses --model when given', async () => {
+    const saved = process.env.OLLAMA_HOST;
+    process.env.OLLAMA_HOST = base;
+    try {
+      await detectProvider({ provider: 'ollama', model: 'gemma4:e4b' }).complete('hi');
+      expect(bodies.at(-1)).toMatchObject({ model: 'gemma4:e4b' });
+    } finally {
+      if (saved === undefined) delete process.env.OLLAMA_HOST;
+      else process.env.OLLAMA_HOST = saved;
+    }
   });
 });

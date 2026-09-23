@@ -8,7 +8,7 @@ import { runRules } from './rules/index.js';
 import { analyze } from './analyze.js';
 import { attachTexts } from './verify/index.js';
 import { resolveProofSandbox, type ProofSandboxMode } from './verify/sandbox.js';
-import { detectProvider } from './llm/client.js';
+import { detectProvider, type ProviderChoice } from './llm/client.js';
 import { runLlmPasses, applyLlmResults } from './llm/passes.js';
 import { assessConfidence } from './report/confidence.js';
 import { buildCoverage } from './report/coverage.js';
@@ -41,8 +41,12 @@ export interface ScanOptions {
   proofSandbox?: ProofSandboxMode;
   /** Container image for proofs (Node 22.18+). */
   proofImage?: string;
-  /** Skip network-dependent collectors. */
+  /** Skip network-dependent collectors, and keep the model pass local. */
   offline?: boolean;
+  /** Model provider for the review pass (default: auto-detect). */
+  provider?: ProviderChoice;
+  /** Model id for the provider. */
+  model?: string;
   /**
    * Do not run gitleaks/trufflehog even if installed. Sentinel then scans git
    * history itself with its precise provider patterns — the same pass a runner
@@ -115,7 +119,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
     rulesOut.run.notExamined.push(`${ignoredCount} gitignored path(s) skipped — not part of the repository (build output, local state)`);
   }
 
-  const provider = detectProvider({ disabled: options.noLlm, banditCli: options.banditCli });
+  const provider = detectProvider({ disabled: options.noLlm, banditCli: options.banditCli, provider: options.provider, model: options.model, offline: options.offline });
 
   const ctx: ScanContext = {
     root,
@@ -158,6 +162,9 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
       timeoutMs: options.llmTimeoutMs,
     });
     ctx.llm.calls = pass.calls;
+    // A provider can only name its model after the first call (ollama picks one).
+    ctx.llm.provider = provider.label;
+    ctx.llm.note = provider.note;
     ctx.llm.failures = pass.failures;
     const merged = applyLlmResults(findings, pass);
     progress(`model pass: ${pass.calls} call(s), ${merged.applied} adjustment(s) applied, ${merged.rejected} rejected, ${pass.proposals.length} proposal(s)`);
