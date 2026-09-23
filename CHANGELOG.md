@@ -5,6 +5,8 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-23
+
 ### Proofs run in a sandbox, and never with your credentials
 
 - **A proof ran the audited repository's code on your machine, with your
