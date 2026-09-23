@@ -5,6 +5,7 @@ import { proofNodeArgs } from '../src/verify/index.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scan } from '../src/scan.js';
+import { resolveProofSandbox } from '../src/verify/sandbox.js';
 import { validateFindings } from '../src/schema.js';
 import type { Finding } from '../src/types.js';
 
@@ -21,6 +22,10 @@ import type { Finding } from '../src/types.js';
 let repo: string;
 let out: string;
 let findings: Finding[];
+
+// The fixture is ours, so the host is an acceptable fallback here: this suite
+// is about verdicts, and test/sandbox.test.ts owns isolation.
+const proofSandbox = resolveProofSandbox({ mode: 'container' }).kind === 'container' ? 'container' : 'host';
 
 const write = (rel: string, content: string): void => {
   const abs = join(repo, rel);
@@ -112,6 +117,7 @@ beforeAll(async () => {
     formats: ['md', 'json', 'sarif', 'html'],
     noLlm: true,
     offline: true,
+    proofSandbox,
   });
   findings = result.findings;
 }, 180_000);

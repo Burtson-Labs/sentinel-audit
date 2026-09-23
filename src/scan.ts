@@ -7,6 +7,7 @@ import { collectDocker } from './collectors/docker.js';
 import { runRules } from './rules/index.js';
 import { analyze } from './analyze.js';
 import { attachTexts } from './verify/index.js';
+import { resolveProofSandbox, type ProofSandboxMode } from './verify/sandbox.js';
 import { detectProvider } from './llm/client.js';
 import { runLlmPasses, applyLlmResults } from './llm/passes.js';
 import { assessConfidence } from './report/confidence.js';
@@ -33,6 +34,13 @@ export interface ScanOptions {
   noLlm?: boolean;
   /** Disable proof generation/execution. */
   noProofs?: boolean;
+  /**
+   * Where proofs execute. Proofs run the audited repository's code, so the
+   * default only runs them in a container and never on the host.
+   */
+  proofSandbox?: ProofSandboxMode;
+  /** Container image for proofs (Node 22.18+). */
+  proofImage?: string;
   /** Skip network-dependent collectors. */
   offline?: boolean;
   /**
@@ -127,11 +135,17 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
 
   progress('verifying findings (re-assertions + proof execution)…');
   const proofDir = join(outDir, 'proofs');
-  if (!options.noProofs) ensureDir(proofDir);
+  const sandbox = options.noProofs
+    ? ({ kind: 'off', reason: 'proof execution was disabled for this run (--no-proofs)' } as const)
+    : resolveProofSandbox({ mode: options.proofSandbox, image: options.proofImage });
+  ctx.proofs = { sandbox: sandbox.kind, note: sandbox.reason };
+  if (sandbox.kind !== 'off') ensureDir(proofDir);
+  else if (!options.noProofs) progress(`proofs skipped: ${sandbox.reason}`);
   const analysis = analyze(ctx, rulesOut.repoContext, {
     profile,
     proofDir,
-    proofsEnabled: !options.noProofs,
+    proofsEnabled: sandbox.kind !== 'off',
+    sandbox,
     toolVersion: TOOL_VERSION,
   });
   let findings = analysis.findings;

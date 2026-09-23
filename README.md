@@ -84,8 +84,14 @@ node dist/cli.js scan ../some-repo --no-llm
 Exit codes: `0` clean · `1` findings at or above the conditional threshold · `2`
 the profile gate blocked.
 
-Not on a public registry yet, so there is no `npm i -g` line here. `npm link` in
-the checkout puts `sentinel` on your `PATH` if you want the short command.
+From a source checkout, `npm link` puts `sentinel` on your `PATH` if you want the
+short command.
+
+Proofs execute the audited repository's code, so they run in a Docker or Podman
+container with no network, a read-only filesystem, no Linux capabilities and an
+empty environment. With no container runtime running, Sentinel skips proofs rather
+than run them on your machine, and the report says so. See
+[SECURITY.md](SECURITY.md#running-against-untrusted-code).
 
 ### Artefacts
 
@@ -182,6 +188,8 @@ sentinel init-workflow           # write .github/workflows/sentinel.yml
 --format <list>         md,html,json,sarif
 --no-llm                deterministic only
 --no-proofs             skip generating and executing proof scripts
+--proof-sandbox <mode>  auto | container | host | off (default auto: container, or skip)
+--proof-image <image>   container image for proofs, Node 22.18+ (default node:24-alpine)
 --offline               skip anything needing the network (dependency advisories)
 --bandit-cli <path>     path to the coding/review agent entrypoint
 --max-review-files <n>  how many files the model review pass may read (default 4)

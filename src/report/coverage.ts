@@ -87,7 +87,7 @@ export function buildCoverage(ctx: ScanContext, findings: Finding[]): CoverageRe
       {
         item: 'Runnable proof generation',
         status: findings.some((f) => f.verification.proof) ? 'covered' : 'partial',
-        detail: `${findings.filter((f) => f.verification.proof).length} finding(s) carry an executed proof script; ${findings.filter((f) => f.verification.method === 'static-assertion').length} were verified by re-asserting the artefact from disk`,
+        detail: `${findings.filter((f) => f.verification.proof).length} finding(s) carry an executed proof script; ${findings.filter((f) => f.verification.method === 'static-assertion').length} were verified by re-asserting the artefact from disk${ctx.proofs ? ` — ${ctx.proofs.note}` : ''}`,
       },
       {
         item: 'Model-assisted deep review',
@@ -138,6 +138,9 @@ export function buildCoverage(ctx: ScanContext, findings: Finding[]): CoverageRe
   if (!ctx.deps.auditAvailable) {
     recommendedFollowUps.push('Re-run with registry access so dependency advisories are collected; this report makes no claim about advisory status.');
   }
+  if (ctx.proofs?.sandbox === 'off' && !/--no-proofs/.test(ctx.proofs.note)) {
+    recommendedFollowUps.push(`Re-run with Docker or Podman available so behavioural findings can be proven or refuted — ${ctx.proofs.note}`);
+  }
   if (!ctx.llm.available) {
     recommendedFollowUps.push('Re-run with a model provider configured so the deep-review pass can look for cross-module data-flow and logic defects the lexical rules cannot see.');
   }
@@ -156,7 +159,11 @@ export function buildCoverage(ctx: ScanContext, findings: Finding[]): CoverageRe
     { name: 'sentinel deterministic collectors', available: true, note: 'recon, dependencies, secrets, CI, containers' },
     { name: ctx.deps.auditCommand ?? 'package-manager audit', available: ctx.deps.auditAvailable, note: ctx.deps.auditAvailable ? 'advisory source' : (ctx.deps.auditError ?? 'unavailable') },
     { name: ctx.secrets.externalScanner.name, available: ctx.secrets.externalScanner.available, note: ctx.secrets.externalScanner.note },
-    { name: 'proof runner (node)', available: true, note: `${findings.filter((f) => f.verification.proof).length} proof script(s) generated and executed` },
+    {
+      name: ctx.proofs?.sandbox === 'container' ? 'proof runner (container sandbox)' : ctx.proofs?.sandbox === 'host' ? 'proof runner (host, scrubbed env)' : 'proof runner',
+      available: ctx.proofs ? ctx.proofs.sandbox !== 'off' : true,
+      note: `${findings.filter((f) => f.verification.proof).length} proof script(s) generated and executed${ctx.proofs ? ` — ${ctx.proofs.note}` : ''}`,
+    },
     { name: 'model pass', available: ctx.llm.available, note: ctx.llm.note },
   ];
 

@@ -6,6 +6,7 @@ import { scan, TOOL_VERSION, type OutputFormat } from './scan.js';
 import { fix } from './fix/index.js';
 import { listProfiles, loadProfile } from './profile.js';
 import { ALL_RULES } from './rules/index.js';
+import { isProofSandboxMode, PROOF_SANDBOX_MODES } from './verify/sandbox.js';
 import { exists, writeFileEnsured } from './util/fsx.js';
 
 /**
@@ -30,6 +31,12 @@ SCAN OPTIONS
   --format <list>         comma-separated: md,html,json,sarif (default: md,html,json,sarif)
   --no-llm                skip the model-assisted pass (deterministic only)
   --no-proofs             skip generating and executing proof scripts
+  --proof-sandbox <mode>  where proofs run: auto | container | host | off (default: auto).
+                          Proofs execute the audited repository's code. auto and container
+                          use docker/podman with no network, a read-only filesystem, no
+                          capabilities and an empty environment, and skip proofs when no
+                          runtime answers. host runs them as you, env scrubbed; opt-in only.
+  --proof-image <image>   container image for proofs, Node 22.18+ (default: node:24-alpine)
   --offline               skip anything needing network access (dependency advisories)
   --no-external-scanners  do not run gitleaks/trufflehog even if installed; Sentinel scans git history itself
   --bandit-cli <path>     path to the Bandit CLI entrypoint used as the coding/review agent
@@ -147,6 +154,12 @@ async function runScan(args: Args): Promise<number> {
     return 64;
   }
 
+  const proofSandbox = String(args.flags.get('proof-sandbox') ?? 'auto');
+  if (!isProofSandboxMode(proofSandbox)) {
+    process.stderr.write(`invalid --proof-sandbox "${proofSandbox}" (expected ${PROOF_SANDBOX_MODES.join(', ')})\n`);
+    return 64;
+  }
+
   const started = Date.now();
   const result = await scan({
     repo: repoPath,
@@ -155,6 +168,8 @@ async function runScan(args: Args): Promise<number> {
     formats,
     noLlm: Boolean(args.flags.get('no-llm')),
     noProofs: Boolean(args.flags.get('no-proofs')),
+    proofSandbox,
+    proofImage: args.flags.has('proof-image') ? String(args.flags.get('proof-image')) : undefined,
     offline: Boolean(args.flags.get('offline')),
     noExternalScanners: Boolean(args.flags.get('no-external-scanners')),
     banditCli: args.flags.has('bandit-cli') ? String(args.flags.get('bandit-cli')) : undefined,

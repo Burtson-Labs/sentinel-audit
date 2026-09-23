@@ -6,6 +6,7 @@ import { scoreConfidence, statusClass, statusFromVerification } from './schema.j
 import { ALL_RULES, ruleById } from './rules/index.js';
 import { copyleftDependencies } from './collectors/dependencies.js';
 import { verify, advisoryMeta } from './verify/index.js';
+import type { ResolvedSandbox } from './verify/sandbox.js';
 import { inTestCodeNote, isCredentialSensitiveRule } from './util/testpaths.js';
 import type {
   AdvisoryRecord,
@@ -72,6 +73,7 @@ export interface AnalyzeOptions {
   profile: Profile;
   proofDir: string;
   proofsEnabled: boolean;
+  sandbox?: ResolvedSandbox;
   toolVersion: string;
   /** Cap on findings emitted per rule family (advisories mostly). */
   maxAdvisoryFindings?: number;
@@ -131,6 +133,7 @@ export function analyze(ctx: ScanContext, repo: RuleRepoContext, options: Analyz
       ctx,
       proofDir: options.proofDir,
       proofsEnabled: options.proofsEnabled,
+      sandbox: options.sandbox,
     });
 
     const status = c.triage?.suppressed

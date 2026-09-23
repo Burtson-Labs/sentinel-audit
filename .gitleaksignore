@@ -1,0 +1,17 @@
+# Reviewed 2026-09-23: test fixtures and detector patterns, no live credentials.
+# Regenerate with: gitleaks git --log-opts=--all --report-format json | jq -r '.[].Fingerprint'
+5b83fc43b00ee1425d99f9a6a32ef93b276777d6:test/collectors.test.ts:private-key:712
+5b83fc43b00ee1425d99f9a6a32ef93b276777d6:test/collectors.test.ts:private-key:728
+5b83fc43b00ee1425d99f9a6a32ef93b276777d6:test/collectors.test.ts:private-key:738
+5b83fc43b00ee1425d99f9a6a32ef93b276777d6:test/collectors.test.ts:private-key:747
+5ce2ec1d85cf073a0c5866e2af5257a505723166:src/collectors/secrets.ts:private-key:100
+7a2b1cd4257e3695b9c298296ac2dc250bf7eeb8:test/collectors.test.ts:private-key:712
+7a2b1cd4257e3695b9c298296ac2dc250bf7eeb8:test/collectors.test.ts:private-key:728
+7a2b1cd4257e3695b9c298296ac2dc250bf7eeb8:test/collectors.test.ts:private-key:738
+7a2b1cd4257e3695b9c298296ac2dc250bf7eeb8:test/collectors.test.ts:private-key:747
+8c7d05618c7434882c32f1a0f29872ee98bd0e04:test/publishable.test.ts:generic-api-key:312
+b3fc73ccea8fbf6fd8f3b435ae2edd132f9ad0b8:test/collectors.test.ts:generic-api-key:384
+cbe37e5979dbea2276c49c0ddc6541a68987e654:test/publishable.test.ts:generic-api-key:32
+cbe37e5979dbea2276c49c0ddc6541a68987e654:test/publishable.test.ts:generic-api-key:91
+cbe37e5979dbea2276c49c0ddc6541a68987e654:test/publishable.test.ts:generic-api-key:92
+cbe37e5979dbea2276c49c0ddc6541a68987e654:test/publishable.test.ts:generic-api-key:93

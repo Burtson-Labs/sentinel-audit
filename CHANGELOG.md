@@ -5,6 +5,36 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Proofs run in a sandbox, and never with your credentials
+
+- **A proof ran the audited repository's code on your machine, with your
+  environment.** `executeProof` started `node` in the target repository with the
+  whole of `process.env`, so scanning an untrusted repository executed its
+  top-level code as you, with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, cloud
+  credentials and registry tokens readable, your home directory in reach and the
+  network open. Proofs now run in a Docker or Podman container: `--network none`,
+  read-only root, the repository and the proof directory mounted read-only at
+  their host paths, `--cap-drop ALL`, `no-new-privileges`, pid/memory/CPU limits,
+  a `noexec` `/tmp`, the caller's uid:gid, and an environment of `NO_COLOR`,
+  `NODE_OPTIONS=` and `HOME=/tmp` only. A timed-out container is removed by name
+  rather than left running.
+- **No silent fallback to the host.** `--proof-sandbox auto` (the default) uses a
+  container when `docker info`/`podman info` answers and otherwise does not
+  execute proofs: affected findings stay `plausible`, and `COVERAGE.md` and the
+  follow-ups say why. `--proof-sandbox host` is the explicit opt-in for trusted
+  repositories and still passes only an allowlisted environment (`PATH`, temp
+  dir, locale). `--proof-image` / `SENTINEL_PROOF_IMAGE` choose the image
+  (default `node:24-alpine`, pulled once up front so the first proof's timeout is
+  not spent downloading); `SENTINEL_CONTAINER_RUNTIME` picks the runtime.
+- Each proof records where it ran (`proof.sandbox`), and the coverage report names
+  the sandbox.
+- `test/sandbox.test.ts` runs a hostile proof that tries to read a planted API
+  key, reach `1.1.1.1`, write into the repository and to `/`, and execute from
+  `/tmp`; any success fails the build. It runs wherever a container runtime is
+  available, which includes CI.
+- README no longer says Sentinel is "not on a public registry yet" directly under
+  the `npm i -g` quickstart.
+
 ### Git history is scanned by Sentinel itself; proofs reach TypeScript ESM; four more real-scan defects
 
 - **Secrets in git history no longer depend on gitleaks being installed.** A

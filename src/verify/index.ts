@@ -1,13 +1,14 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { ensureDir, exists, writeFileEnsured, excerpt } from '../util/fsx.js';
-import { run, git } from '../util/exec.js';
+import { git } from '../util/exec.js';
 import { satisfies } from '../util/semver.js';
 import { gateSatisfied } from '../collectors/ci.js';
 import { SECRET_RULES } from '../collectors/secrets.js';
 import { analyseDockerfile } from '../collectors/docker.js';
 import { surveyCsp, surveyEdgeConfig } from '../util/edge.js';
 import { resolveInstalledVersions } from './installed.js';
+import { executeInSandbox, type ResolvedSandbox } from './sandbox.js';
 import type {
   AdvisoryRecord,
   ProofRun,
@@ -57,6 +58,8 @@ export interface VerifyInput {
   proofDir: string;
   /** Skip proof execution (CI with no install, or --no-proofs). */
   proofsEnabled: boolean;
+  /** Where proofs execute. Absent means proofs are not executed. */
+  sandbox?: ResolvedSandbox;
 }
 
 export interface VerifyResult {
@@ -206,7 +209,7 @@ function verifyHtmlSink(input: VerifyInput): VerifyResult {
   const { hits, ctx } = input;
   const base = verifyByReassertion(input);
   if (!input.proofsEnabled) {
-    base.verification.notes += ' Proof execution was disabled for this run, so exploitability is unproven.';
+    base.verification.notes += ` Proofs were not executed for this run (${input.sandbox?.kind === 'off' ? input.sandbox.reason : 'disabled'}), so exploitability is unproven.`;
     base.verification.result = 'plausible';
     return base;
   }
@@ -975,12 +978,20 @@ function executeProof(spec: ProofSpec, input: VerifyInput): ProofRun | null {
   // proofs and the "re-runnable by hand" claim holds for the directory as a whole.
   writeFileEnsured(join(input.proofDir, RESOLVE_HOOK_FILENAME), RESOLVE_HOOK_SOURCE);
   const started = Date.now();
-  const nodeArgs = proofNodeArgs();
-  const res = run(process.execPath, [...nodeArgs, scriptPath], {
-    cwd: input.ctx.root,
+  // No sandbox resolved means no execution: running the target's code is never a default.
+  const sandbox = input.sandbox ?? ({ kind: 'off', reason: 'no proof sandbox was resolved' } as const);
+  const hostNodeArgs = proofNodeArgs();
+  const exec = executeInSandbox(sandbox, {
+    root: input.ctx.root,
+    proofDir: input.proofDir,
+    scriptPath,
+    hostNodeArgs,
     timeoutMs: 60_000,
-    env: { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1' },
   });
+  if (!exec) return null;
+  const res = exec.result;
+  // The container's Node strips types by default, so only a host run needs the flag.
+  const nodeArgs = sandbox.kind === 'host' ? hostNodeArgs : [];
   const parsed = parseProofOutput(res.stdout);
   const durationMs = Date.now() - started;
   const relPath = `proofs/${spec.filename}`;
@@ -995,6 +1006,7 @@ function executeProof(spec: ProofSpec, input: VerifyInput): ProofRun | null {
       predicted: spec.predicted,
       observed: `the proof produced no verdict line (exit ${res.code}). ${excerpt(res.stderr || res.stdout, 300)}`,
       verdict: 'error',
+      sandbox: exec.where,
       stdoutExcerpt: excerpt(res.stdout, 1500),
       stderrExcerpt: excerpt(res.stderr, 600),
     };
@@ -1007,6 +1019,7 @@ function executeProof(spec: ProofSpec, input: VerifyInput): ProofRun | null {
     predicted: spec.predicted,
     observed: `${parsed.detail}${parsed.stubbedModules.length > 0 ? ` [stubbed unresolvable modules: ${parsed.stubbedModules.join(', ')}]` : ''}`,
     verdict: parsed.verdict,
+    sandbox: exec.where,
     stdoutExcerpt: excerpt(`${parsed.detail} | ${parsed.observations.slice(0, 8).join(' | ')}`, 1800),
     stderrExcerpt: excerpt(res.stderr, 600),
   };

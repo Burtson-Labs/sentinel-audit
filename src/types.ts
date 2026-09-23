@@ -95,6 +95,8 @@ export interface ProofRun {
   observed: string;
   /** Machine verdict parsed from the proof's JSON line. */
   verdict: 'vulnerable' | 'safe' | 'inconclusive' | 'error';
+  /** Where the proof executed, e.g. "docker node:24-alpine, no network, read-only". */
+  sandbox?: string;
   stdoutExcerpt: string;
   stderrExcerpt: string;
 }
@@ -475,6 +477,8 @@ export interface ScanContext {
   hits: RuleHit[];
   runs: CollectorRun[];
   llm: { provider: string; available: boolean; note: string; calls: number; failures: number };
+  /** Where proof scripts executed, or why they did not. */
+  proofs?: { sandbox: 'container' | 'host' | 'off'; note: string };
   startedAt: string;
   finishedAt?: string;
 }
