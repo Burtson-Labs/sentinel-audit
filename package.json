@@ -1,6 +1,6 @@
 {
   "name": "@burtson-labs/sentinel-audit",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "AI-driven repository audit: verified security, quality and supply-chain findings with runnable proofs, agent-executable fix plans, and SARIF output.",
   "license": "MIT",
   "type": "module",

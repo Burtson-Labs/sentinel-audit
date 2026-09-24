@@ -472,6 +472,8 @@ export const childProcessShellRule: Rule = {
   }),
 };
 
+const MAIN_MODULE_CHECK = /process\.argv\[1\][^;]{0,80}[!=]==?[^;]{0,80}import\.meta\.url|import\.meta\.url[^;]{0,80}[!=]==?[^;]{0,80}process\.argv\[1\]/;
+
 export const pathTraversalRule: Rule = {
   id: 'SEC-PATH-TRAVERSAL',
   title: 'Filesystem path built from caller-influenced input without confinement',
@@ -501,6 +503,9 @@ export const pathTraversalRule: Rule = {
     for (const m of matchCode(ctx.src, ctx.masked, re)) {
       const args = m.match[3] ?? '';
       if (!USER_INPUT.test(args) && !USER_INPUT.test(m.lineText)) continue;
+      // `resolve(process.argv[1]) === fileURLToPath(import.meta.url)` is the
+      // ESM "am I the entry script" check: two strings compared, nothing opened.
+      if (MAIN_MODULE_CHECK.test(m.lineText)) continue;
       const confined = /startsWith\(|realpath|isInside|withinRoot|assertInside|relative\(/i.test(
         ctx.src.slice(Math.max(0, m.index - 400), m.index + 400),
       );

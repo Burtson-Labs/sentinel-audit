@@ -1219,4 +1219,15 @@ describe('three shapes real scans got wrong', () => {
     const bareJoin = ruleById('SEC-PATH-TRAVERSAL')!.scan!(fileCtx('src/files.ts', "import { join } from 'node:path';\nexport const target = (root: string, filename: string) => join(root, filename);\n"));
     expect(bareJoin.length).toBe(1);
   });
+
+  it('does not report the ESM entry-script check, but still reports argv used as a path', () => {
+    const mainCheck = ruleById('SEC-PATH-TRAVERSAL')!.scan!(
+      fileCtx('scripts/build.mjs', "import { resolve } from 'node:path';\nimport { fileURLToPath } from 'node:url';\nif (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();\n"),
+    );
+    expect(mainCheck).toEqual([]);
+    const argvPath = ruleById('SEC-PATH-TRAVERSAL')!.scan!(
+      fileCtx('scripts/read.mjs', "import { resolve } from 'node:path';\nimport { readFileSync } from 'node:fs';\nconst file = resolve(process.argv[2]);\nreadFileSync(file);\n"),
+    );
+    expect(argvPath.length).toBe(1);
+  });
 });
