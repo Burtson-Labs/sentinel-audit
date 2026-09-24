@@ -13,7 +13,7 @@ import type { CiResult, CollectorRun, WorkflowJobStep, WorkflowSummary } from '.
 
 const GATE_PATTERNS: Record<keyof WorkflowSummary['gates'], RegExp> = {
   test: /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\bvitest\b|\bjest\b|\bmocha\b|\bplaywright test\b|\bgo test\b|\bpytest\b|\bdotnet test\b|\bcargo test\b/,
-  lint: /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?lint\b|\beslint\b|\bbiome (?:check|lint)\b|\bruff\b|\bgolangci-lint\b|\bclippy\b/,
+  lint: /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?lint\b|\beslint\b|\bbiome (?:check|lint)\b|\bruff\b|\bgolangci-lint\b|\bclippy\b|\bshellcheck\b|\bhadolint\b|\bactionlint\b|\byamllint\b|\bkubeconform\b|\bkube-linter\b/,
   typecheck: /\btsc\b|\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?typecheck\b|\bmypy\b|\bpyright\b/,
   audit: /\b(?:npm|pnpm|yarn)\s+audit\b|\bsnyk\b|\bosv-scanner\b|\btrivy\b|\bgrype\b|\bdependency-review-action\b|\bdependabot\b/,
   sast: /\bcodeql\b|\bsemgrep\b|\bsonar(?:cloud|qube)?\b|\bbandit\b(?!\s*-)|\bbrakeman\b|\bgosec\b|\bsentinel scan\b|\bsentinel-audit\b/i,

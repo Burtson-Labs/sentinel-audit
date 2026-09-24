@@ -5,6 +5,16 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-23
+
+- **Required CI gates now depend on what the repository contains.** A hosting
+  repo of shell scripts, manifests and a Dockerfile was told its PR gate lacked
+  a typecheck and tests it has no code for, which pushes people to add no-op
+  steps. Typecheck is owed only with TypeScript or Python present, and tests
+  only when there is source code. Lint and the security gates are always owed.
+- **Infrastructure linters count as lint:** `shellcheck`, `hadolint`,
+  `actionlint`, `yamllint`, `kubeconform`, `kube-linter`.
+
 ## [0.2.1] - 2026-09-23
 
 - **The GitHub Action did not count as a secrets or audit gate.** Gate detection

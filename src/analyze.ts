@@ -691,7 +691,13 @@ function candidatesFromCi(ctx: ScanContext): CandidateFinding[] {
   const { workflows, unpinnedActions, riskyTriggers } = ctx.ci;
 
   const gateNames = ['test', 'lint', 'typecheck', 'audit', 'sast', 'secrets'] as const;
-  const missing = gateNames.filter((g) => !workflows.some((w) => w.gates[g]));
+  // A gate is only owed where it can apply: a hosting repo of shell scripts,
+  // manifests and a Dockerfile has nothing to typecheck and no source to test,
+  // and demanding both taught people to add a no-op step to silence the finding.
+  const langs = new Set(ctx.recon.languages.map((l) => l.language));
+  const applies = (g: (typeof gateNames)[number]): boolean =>
+    g === 'typecheck' ? ctx.recon.hasTypeScript || langs.has('TypeScript') || langs.has('Python') : g === 'test' ? ctx.recon.sourceFileCount > 0 : true;
+  const missing = gateNames.filter((g) => applies(g) && !workflows.some((w) => w.gates[g]));
   const hasAnyWorkflow = workflows.length > 0;
 
   if (missing.length > 0) {
