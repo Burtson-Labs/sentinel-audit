@@ -5,6 +5,14 @@ All notable changes to this project are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-23
+
+- **The GitHub Action did not count as a secrets or audit gate.** Gate detection
+  recognised `sentinel scan` run as a command, but not `uses: Burtson-Labs/sentinel-audit@…`,
+  so a repository adopting the action was told its PR gate had no secret scan.
+  The action now counts as SAST, secrets and (unless its `args` say `--offline`)
+  dependency audit, the same as the command.
+
 ## [0.2.0] - 2026-09-23
 
 ### Proofs run in a sandbox, and never with your credentials

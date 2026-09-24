@@ -131,7 +131,11 @@ export function summariseWorkflow(file: string, text: string): WorkflowSummary {
               uses,
               pinned: uses ? PINNED_SHA.test(uses) || uses.startsWith('./') : undefined,
             });
-            const haystack = `${runCmd ?? ''}\n${uses ?? ''}`;
+            // The action's `args` input is where `--offline` would go, so it is
+            // part of what the step runs.
+            const withMap = step.with && typeof step.with === 'object' && !Array.isArray(step.with) ? (step.with as Record<string, YamlValue>) : undefined;
+            const actionArgs = uses && SENTINEL_ACTION.test(uses) && typeof withMap?.args === 'string' ? withMap.args : '';
+            const haystack = `${runCmd ?? ''}\n${uses ?? ''}\n${actionArgs}`;
             if (!softFail && !isSoftFailed(runCmd)) markGates(haystack, gates);
             else if (softFail && typeof step.id === 'string') deferred.set(step.id, haystack);
             if (runCmd) {
@@ -185,6 +189,9 @@ function isSoftFailed(cmd: string | undefined): boolean {
  */
 const SENTINEL_SCAN = /(?:\bsentinel(?:-audit)?|(?:^|[\s/])dist\/cli\.js)\s+scan\b/m;
 
+/** The GitHub Action (`uses: Burtson-Labs/sentinel-audit@<ref>`) runs the same scan. */
+const SENTINEL_ACTION = /(?:^|\n)\s*burtson-labs\/sentinel-audit@/i;
+
 function markGates(haystack: string, gates: WorkflowSummary['gates']): void {
   for (const key of Object.keys(GATE_PATTERNS) as Array<keyof WorkflowSummary['gates']>) {
     if (GATE_PATTERNS[key].test(haystack)) gates[key] = true;
@@ -194,7 +201,7 @@ function markGates(haystack: string, gates: WorkflowSummary['gates']): void {
   // itself — every historical blob not identical to a working-tree file is
   // checked with the precise provider patterns — so a repository that runs it
   // on pull requests has all three gates.
-  if (SENTINEL_SCAN.test(haystack)) {
+  if (SENTINEL_SCAN.test(haystack) || SENTINEL_ACTION.test(haystack)) {
     gates.sast = true;
     gates.secrets = true;
     if (!/--offline\b/.test(haystack)) gates.audit = true;

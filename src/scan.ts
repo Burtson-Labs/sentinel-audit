@@ -21,7 +21,7 @@ import { ensureDir, writeFileEnsured, exists } from './util/fsx.js';
 import type { ConfidenceAssessment, Finding, ScanContext } from './types.js';
 import type { ValidationIssue } from './schema.js';
 
-export const TOOL_VERSION = '0.2.0';
+export const TOOL_VERSION = '0.2.1';
 
 export type OutputFormat = 'md' | 'html' | 'json' | 'sarif';
 

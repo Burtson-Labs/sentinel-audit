@@ -255,6 +255,25 @@ jobs:
     expect(summary.gates.audit).toBe(false);
   });
 
+  it('counts the Sentinel GitHub Action as sast, secrets and audit gates', () => {
+    const wf = `name: ci
+on: [pull_request]
+jobs:
+  audit:
+    steps:
+      - uses: Burtson-Labs/sentinel-audit@2d075adf579c970c258442d4ef086cfb562caf64 # v0.2.0
+        with:
+          fail-on: findings
+`;
+    const gates = summariseWorkflow('.github/workflows/ci.yml', wf).gates;
+    expect(gates.sast).toBe(true);
+    expect(gates.secrets).toBe(true);
+    expect(gates.audit).toBe(true);
+    const offline = wf.replace('fail-on: findings', 'args: --no-llm --offline');
+    expect(summariseWorkflow('.github/workflows/ci.yml', offline).gates.audit, 'an offline scan fetches no advisories').toBe(false);
+    expect(summariseWorkflow('.github/workflows/ci.yml', offline).gates.secrets).toBe(true);
+  });
+
   it('treats continue-on-error as not gating', () => {
     const wf = `name: ci
 on: [pull_request]
